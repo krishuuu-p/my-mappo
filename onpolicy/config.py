@@ -159,6 +159,12 @@ def get_config():
     # prepare parameters
     parser.add_argument("--algorithm_name", type=str,
                         default='mappo', choices=["rmappo", "mappo", "happo", "hatrpo", "mat", "mat_dec"])
+    
+    # Model type selection (for MA-LSTM-PPO support)
+    # Reference: docs/MA-LSTM-PPO-paper-summary.md Section 2 (Model architecture)
+    parser.add_argument("--model", type=str, default=None,
+                        choices=["ma_lstm", None],
+                        help="Model architecture to use. 'ma_lstm' uses LSTM actor with centralized critic.")
 
     parser.add_argument("--experiment_name", type=str, default="check", help="an identifier to distinguish different experiment.")
     parser.add_argument("--seed", type=int, default=1, help="Random seed for numpy/torch")

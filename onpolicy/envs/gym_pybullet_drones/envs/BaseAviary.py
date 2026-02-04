@@ -12,7 +12,7 @@ import numpy as np
 import pybullet as p
 import pybullet_data
 import gymnasium as gym
-from gym_pybullet_drones.utils.enums import DroneModel, Physics, ImageType
+from onpolicy.envs.gym_pybullet_drones.utils.enums import DroneModel, Physics, ImageType
 
 
 class BaseAviary(gym.Env):
@@ -483,7 +483,9 @@ class BaseAviary(gym.Env):
         #### Load ground plane, drone and obstacles models #########
         self.PLANE_ID = p.loadURDF("plane.urdf", physicsClientId=self.CLIENT)
 
-        self.DRONE_IDS = np.array([p.loadURDF(pkg_resources.resource_filename('gym_pybullet_drones', 'assets/'+self.URDF),
+        # Use relative path to assets directory
+        urdf_path = os.path.join(os.path.dirname(__file__), '..', 'assets', self.URDF)
+        self.DRONE_IDS = np.array([p.loadURDF(urdf_path,
                                               self.INIT_XYZS[i,:],
                                               p.getQuaternionFromEuler(self.INIT_RPYS[i,:]),
                                               flags = p.URDF_USE_INERTIA_FROM_FILE,
@@ -989,7 +991,9 @@ class BaseAviary(gym.Env):
         files in folder `assets/`.
 
         """
-        URDF_TREE = etxml.parse(pkg_resources.resource_filename('gym_pybullet_drones', 'assets/'+self.URDF)).getroot()
+        # Use relative path to assets directory
+        assets_path = os.path.join(os.path.dirname(__file__), '..', 'assets', self.URDF)
+        URDF_TREE = etxml.parse(assets_path).getroot()
         M = float(URDF_TREE[1][0][1].attrib['value'])
         L = float(URDF_TREE[0].attrib['arm'])
         THRUST2WEIGHT_RATIO = float(URDF_TREE[0].attrib['thrust2weight'])

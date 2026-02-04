@@ -8,8 +8,8 @@ import time
 
 from transforms3d.quaternions import rotate_vector, qconjugate
 
-from gym_pybullet_drones.envs.BaseAviary import BaseAviary
-from gym_pybullet_drones.utils.enums import DroneModel, Physics
+from onpolicy.envs.gym_pybullet_drones.envs.BaseAviary import BaseAviary
+from onpolicy.envs.gym_pybullet_drones.utils.enums import DroneModel, Physics
 
 BASE_PORT_PWM=9002 # In
 BASE_PORT_STATE=9003 # Out

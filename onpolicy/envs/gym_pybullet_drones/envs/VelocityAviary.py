@@ -2,9 +2,9 @@ import os
 import numpy as np
 from gymnasium import spaces
 
-from gym_pybullet_drones.envs.BaseAviary import BaseAviary
-from gym_pybullet_drones.utils.enums import DroneModel, Physics
-from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
+from onpolicy.envs.gym_pybullet_drones.envs.BaseAviary import BaseAviary
+from onpolicy.envs.gym_pybullet_drones.utils.enums import DroneModel, Physics
+from onpolicy.envs.gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 
 class VelocityAviary(BaseAviary):
     """Multi-drone environment class for high-level planning."""

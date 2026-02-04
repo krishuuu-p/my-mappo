@@ -70,6 +70,13 @@ class Runner(object):
             from onpolicy.algorithms.r_mappo.r_mappo import R_MAPPO as TrainAlgo
             from onpolicy.algorithms.r_mappo.algorithm.rMAPPOPolicy import R_MAPPOPolicy as Policy
 
+        # Check if MA-LSTM model is requested
+        # Reference: docs/MA-LSTM-PPO-paper-summary.md Section 2 (Model architecture)
+        model_type = getattr(self.all_args, 'model', None)
+        if model_type == 'ma_lstm':
+            from onpolicy.models.ma_lstm_policy import MA_LSTM_Policy as Policy
+            print("Using MA-LSTM-PPO policy with LSTM actor and centralized critic")
+
         share_observation_space = self.envs.share_observation_space[0] if self.use_centralized_V else self.envs.observation_space[0]
 
         print("obs_space: ", self.envs.observation_space)

@@ -564,7 +564,8 @@ class SharedReplayBuffer(object):
                 active_masks_batch.append(active_masks[ind:ind + data_chunk_length])
                 old_action_log_probs_batch.append(action_log_probs[ind:ind + data_chunk_length])
                 adv_targ.append(advantages[ind:ind + data_chunk_length])
-                # size [T+1 N M Dim]-->[T N M Dim]-->[N M T Dim]-->[N*M*T,Dim]-->[1,Dim]
+                # size [T+1 N M Dim]-->[T N M Dim]-->[N M T Dim]-->[N*M*T,Dim]-->[L,Dim]
+                # Take the first RNN state of the chunk for initialization
                 rnn_states_batch.append(rnn_states[ind])
                 rnn_states_critic_batch.append(rnn_states_critic[ind])
 
@@ -587,6 +588,11 @@ class SharedReplayBuffer(object):
             # States is just a (N, -1) from_numpy
             rnn_states_batch = np.stack(rnn_states_batch).reshape(N, *self.rnn_states.shape[3:])
             rnn_states_critic_batch = np.stack(rnn_states_critic_batch).reshape(N, *self.rnn_states_critic.shape[3:])
+            
+            # Expand RNN states to match sequence length
+            # from (N, recurrent_N, hidden) to (L, N, recurrent_N, hidden) then flatten to (L*N, recurrent_N, hidden)
+            rnn_states_batch = np.tile(rnn_states_batch[np.newaxis, :, :, :], (L, 1, 1, 1))
+            rnn_states_critic_batch = np.tile(rnn_states_critic_batch[np.newaxis, :, :, :], (L, 1, 1, 1))
 
             # Flatten the (L, N, ...) from_numpys to (L * N, ...)
             share_obs_batch = _flatten(L, N, share_obs_batch)
@@ -602,6 +608,10 @@ class SharedReplayBuffer(object):
             active_masks_batch = _flatten(L, N, active_masks_batch)
             old_action_log_probs_batch = _flatten(L, N, old_action_log_probs_batch)
             adv_targ = _flatten(L, N, adv_targ)
+            
+            # Flatten RNN states as well
+            rnn_states_batch = _flatten(L, N, rnn_states_batch)
+            rnn_states_critic_batch = _flatten(L, N, rnn_states_critic_batch)
 
             yield share_obs_batch, obs_batch, rnn_states_batch, rnn_states_critic_batch, actions_batch,\
                   value_preds_batch, return_batch, masks_batch, active_masks_batch, old_action_log_probs_batch,\

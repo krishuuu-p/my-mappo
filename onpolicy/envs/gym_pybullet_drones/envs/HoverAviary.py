@@ -1,7 +1,7 @@
 import numpy as np
 
-from gym_pybullet_drones.envs.BaseRLAviary import BaseRLAviary
-from gym_pybullet_drones.utils.enums import DroneModel, Physics, ActionType, ObservationType
+from onpolicy.envs.gym_pybullet_drones.envs.BaseRLAviary import BaseRLAviary
+from onpolicy.envs.gym_pybullet_drones.utils.enums import DroneModel, Physics, ActionType, ObservationType
 
 class HoverAviary(BaseRLAviary):
     """Single agent RL problem: hover at position."""

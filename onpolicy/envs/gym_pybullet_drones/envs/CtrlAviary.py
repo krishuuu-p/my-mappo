@@ -1,8 +1,8 @@
 import numpy as np
 from gymnasium import spaces
 
-from gym_pybullet_drones.envs.BaseAviary import BaseAviary
-from gym_pybullet_drones.utils.enums import DroneModel, Physics
+from onpolicy.envs.gym_pybullet_drones.envs.BaseAviary import BaseAviary
+from onpolicy.envs.gym_pybullet_drones.utils.enums import DroneModel, Physics
 
 class CtrlAviary(BaseAviary):
     """Multi-drone environment class for control applications."""
