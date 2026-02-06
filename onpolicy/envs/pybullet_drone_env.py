@@ -122,11 +122,12 @@ class PyBulletDroneWrapper:
         base_obs_space = self._env.observation_space
         
         # Per-agent observation dimension
-        # KIN obs: [x,y,z, r,p,y, vx,vy,vz, wx,wy,wz] = 12 dims + action buffer
+        # New KIN obs: own_state(6) + rel_target(3) + neighbors(6*(N-1)) = 21 for 3 drones
         if hasattr(base_obs_space, 'shape'):
             self.obs_dim = base_obs_space.shape[1] if len(base_obs_space.shape) > 1 else base_obs_space.shape[0]
         else:
-            self.obs_dim = 12  # Default KIN observation
+            # For 3 drones: 6 + 3 + 6*2 = 21
+            self.obs_dim = 6 + 3 + 6 * (self.num_drones - 1)
         
         # Share observation: positions (3) + velocities (3) for all agents, concatenated
         # Reference: docs/MA-LSTM-PPO-paper-summary.md Section 2 (Centralized Critic input)

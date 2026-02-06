@@ -246,7 +246,15 @@ class BaseRLAviary(BaseAviary):
         Returns
         -------
         ndarray
-            A Box() of shape (NUM_DRONES,H,W,4) or (NUM_DRONES,12) depending on the observation type.
+            A Box() of shape (NUM_DRONES,H,W,4) or (NUM_DRONES, obs_dim) depending on the observation type.
+            
+        For KIN observation type with VEL action type:
+            obs_dim = 9 + (NUM_DRONES - 1) * 6
+            - Own state: x, y, z, vx, vy, vz (6 dims)
+            - Relative target position: dx, dy, dz (3 dims)
+            - Neighbor states: x, y, z, vx, vy, vz per neighbor (6 dims each)
+            
+            For 3 drones: 6 + 3 + 2*6 = 21 dimensions
 
         """
         if self.OBS_TYPE == ObservationType.RGB:
@@ -255,25 +263,14 @@ class BaseRLAviary(BaseAviary):
                               shape=(self.NUM_DRONES, self.IMG_RES[1], self.IMG_RES[0], 4), dtype=np.uint8)
         elif self.OBS_TYPE == ObservationType.KIN:
             ############################################################
-            #### OBS SPACE OF SIZE 12
-            #### Observation vector ### X        Y        Z       Q1   Q2   Q3   Q4   R       P       Y       VX       VY       VZ       WX       WY       WZ
+            #### OBS SPACE: own_state(6) + rel_target(3) + neighbors(6*(N-1))
+            #### For 3 drones: 6 + 3 + 12 = 21 dimensions
             lo = -np.inf
             hi = np.inf
-            obs_lower_bound = np.array([[lo,lo,0, lo,lo,lo,lo,lo,lo,lo,lo,lo] for i in range(self.NUM_DRONES)])
-            obs_upper_bound = np.array([[hi,hi,hi,hi,hi,hi,hi,hi,hi,hi,hi,hi] for i in range(self.NUM_DRONES)])
-            #### Add action buffer to observation space ################
-            act_lo = -1
-            act_hi = +1
-            for i in range(self.ACTION_BUFFER_SIZE):
-                if self.ACT_TYPE in [ActionType.RPM, ActionType.VEL]:
-                    obs_lower_bound = np.hstack([obs_lower_bound, np.array([[act_lo,act_lo,act_lo,act_lo] for i in range(self.NUM_DRONES)])])
-                    obs_upper_bound = np.hstack([obs_upper_bound, np.array([[act_hi,act_hi,act_hi,act_hi] for i in range(self.NUM_DRONES)])])
-                elif self.ACT_TYPE==ActionType.PID:
-                    obs_lower_bound = np.hstack([obs_lower_bound, np.array([[act_lo,act_lo,act_lo] for i in range(self.NUM_DRONES)])])
-                    obs_upper_bound = np.hstack([obs_upper_bound, np.array([[act_hi,act_hi,act_hi] for i in range(self.NUM_DRONES)])])
-                elif self.ACT_TYPE in [ActionType.ONE_D_RPM, ActionType.ONE_D_PID]:
-                    obs_lower_bound = np.hstack([obs_lower_bound, np.array([[act_lo] for i in range(self.NUM_DRONES)])])
-                    obs_upper_bound = np.hstack([obs_upper_bound, np.array([[act_hi] for i in range(self.NUM_DRONES)])])
+            # obs_dim = 6 (own state) + 3 (relative target) + 6*(NUM_DRONES-1) (neighbors)
+            obs_dim = 6 + 3 + 6 * (self.NUM_DRONES - 1)
+            obs_lower_bound = np.array([[lo] * obs_dim for i in range(self.NUM_DRONES)])
+            obs_upper_bound = np.array([[hi] * obs_dim for i in range(self.NUM_DRONES)])
             return spaces.Box(low=obs_lower_bound, high=obs_upper_bound, dtype=np.float32)
             ############################################################
         else:
@@ -287,7 +284,14 @@ class BaseRLAviary(BaseAviary):
         Returns
         -------
         ndarray
-            A Box() of shape (NUM_DRONES,H,W,4) or (NUM_DRONES,12) depending on the observation type.
+            A Box() of shape (NUM_DRONES,H,W,4) or (NUM_DRONES, obs_dim) depending on the observation type.
+            
+        For KIN observation type:
+            obs_dim = 6 + 3 + 6*(NUM_DRONES-1) = 21 for 3 drones
+            Structure per drone:
+            - Own state: [x, y, z, vx, vy, vz] (6 dims)
+            - Relative target: [dx, dy, dz] (3 dims)  
+            - Neighbor states: [x, y, z, vx, vy, vz] per neighbor (6 dims each)
 
         """
         if self.OBS_TYPE == ObservationType.RGB:
@@ -306,17 +310,47 @@ class BaseRLAviary(BaseAviary):
             return np.array([self.rgb[i] for i in range(self.NUM_DRONES)]).astype('float32')
         elif self.OBS_TYPE == ObservationType.KIN:
             ############################################################
-            #### OBS SPACE OF SIZE 12
-            obs_12 = np.zeros((self.NUM_DRONES,12))
+            #### OBS: own_state(6) + rel_target(3) + neighbors(6*(N-1))
+            #### For 3 drones: 6 + 3 + 12 = 21 dimensions
+            
+            # Get all drone states first
+            all_states = np.array([self._getDroneStateVector(i) for i in range(self.NUM_DRONES)])
+            
+            # Get target positions (set by subclass like MultiHoverAviary)
+            if hasattr(self, 'TARGET_POS'):
+                target_pos = self.TARGET_POS
+            else:
+                # Default: target is 1m above initial position
+                target_pos = self.INIT_XYZS + np.array([[0, 0, 1.0] for _ in range(self.NUM_DRONES)])
+            
+            obs_dim = 6 + 3 + 6 * (self.NUM_DRONES - 1)
+            obs = np.zeros((self.NUM_DRONES, obs_dim), dtype=np.float32)
+            
             for i in range(self.NUM_DRONES):
-                #obs = self._clipAndNormalizeState(self._getDroneStateVector(i))
-                obs = self._getDroneStateVector(i)
-                obs_12[i, :] = np.hstack([obs[0:3], obs[7:10], obs[10:13], obs[13:16]]).reshape(12,)
-            ret = np.array([obs_12[i, :] for i in range(self.NUM_DRONES)]).astype('float32')
-            #### Add action buffer to observation #######################
-            for i in range(self.ACTION_BUFFER_SIZE):
-                ret = np.hstack([ret, np.array([self.action_buffer[i][j, :] for j in range(self.NUM_DRONES)])])
-            return ret
+                state_i = all_states[i]
+                
+                # Own state: position (0:3) and velocity (10:13)
+                own_pos = state_i[0:3]
+                own_vel = state_i[10:13]
+                own_state = np.concatenate([own_pos, own_vel])  # 6 dims
+                
+                # Relative target position
+                rel_target = target_pos[i] - own_pos  # 3 dims
+                
+                # Neighbor states (all other drones)
+                neighbor_states = []
+                for j in range(self.NUM_DRONES):
+                    if j != i:
+                        state_j = all_states[j]
+                        neighbor_pos = state_j[0:3]
+                        neighbor_vel = state_j[10:13]
+                        neighbor_states.extend(neighbor_pos)
+                        neighbor_states.extend(neighbor_vel)
+                
+                # Concatenate all parts
+                obs[i, :] = np.concatenate([own_state, rel_target, neighbor_states])
+            
+            return obs
             ############################################################
         else:
             print("[ERROR] in BaseRLAviary._computeObs()")

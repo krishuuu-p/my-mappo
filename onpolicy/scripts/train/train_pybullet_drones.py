@@ -29,7 +29,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from onpolicy.config import get_config
 from onpolicy.envs.pybullet_drone_env import PyBulletDroneWrapper
-from onpolicy.envs.env_wrappers import ShareDummyVecEnv, SubprocVecEnv
+from onpolicy.envs.env_wrappers import ShareDummyVecEnv, ShareSubprocVecEnv
 
 
 def make_train_env(all_args):
@@ -56,7 +56,7 @@ def make_train_env(all_args):
     if all_args.n_rollout_threads == 1:
         return ShareDummyVecEnv([get_env_fn(0)])
     else:
-        return SubprocVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
+        return ShareSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
 
 
 def make_eval_env(all_args):
@@ -83,7 +83,7 @@ def make_eval_env(all_args):
     if all_args.n_eval_rollout_threads == 1:
         return ShareDummyVecEnv([get_env_fn(0)])
     else:
-        return SubprocVecEnv([get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)])
+        return ShareSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)])
 
 
 def parse_args(args, parser):
@@ -94,9 +94,7 @@ def parse_args(args, parser):
     
     Reference: docs/MA-LSTM-PPO-paper-summary.md Section 5 (hyperparameters)
     """
-    # Drone environment arguments
-    parser.add_argument('--num_drones', type=int, default=3,
-                        help="Number of drones")
+    # Drone environment arguments (num_drones is already defined in config.py)
     parser.add_argument('--use_formation_reward', action='store_true', default=True,
                         help="Use formation-based reward")
     

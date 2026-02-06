@@ -9,6 +9,7 @@ from pathlib import Path
 import torch
 from onpolicy.config import get_config
 from onpolicy.envs.mpe.MPE_env import MPEEnv
+from onpolicy.envs.pybullet_drone_env import PyBulletDroneWrapper
 from onpolicy.envs.env_wrappers import SubprocVecEnv, DummyVecEnv
 
 """Train script for MPEs."""
@@ -18,6 +19,12 @@ def make_train_env(all_args):
         def init_env():
             if all_args.env_name == "MPE":
                 env = MPEEnv(all_args)
+            elif all_args.env_name == "drones":
+                env = PyBulletDroneWrapper(
+                    num_drones=all_args.num_drones,
+                    gui=False,
+                    use_formation_reward=True,
+                )
             else:
                 print("Can not support the " +
                       all_args.env_name + "environment.")
@@ -36,6 +43,12 @@ def make_eval_env(all_args):
         def init_env():
             if all_args.env_name == "MPE":
                 env = MPEEnv(all_args)
+            elif all_args.env_name == "drones":
+                env = PyBulletDroneWrapper(
+                    num_drones=all_args.num_drones,
+                    gui=False,
+                    use_formation_reward=True,
+                )
             else:
                 print("Can not support the " +
                       all_args.env_name + "environment.")

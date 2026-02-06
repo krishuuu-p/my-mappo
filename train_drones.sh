@@ -7,11 +7,11 @@ export PYTHONPATH="C:\Users\DELL\my-mappo"
 
 # Default parameters
 NUM_DRONES=${1:-3}
-NUM_STEPS=${2:-5000}
+NUM_STEPS=${2:-1000000}
 EPISODE_LENGTH=${3:-50}
 RECURRENT_N=${4:-1}
-N_ROLLOUT_THREADS=${5:-1}
-LOG_INTERVAL=${6:-5}
+N_ROLLOUT_THREADS=${5:-4}
+LOG_INTERVAL=${6:-10}
 
 echo "========================================="
 echo "MA-LSTM-PPO Training for PyBullet Drones"
