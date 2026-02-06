@@ -20,6 +20,9 @@ from typing import List, Tuple, Dict, Any, Optional
 from onpolicy.envs.gym_pybullet_drones.envs.MultiHoverAviary import MultiHoverAviary
 from onpolicy.envs.gym_pybullet_drones.utils.enums import DroneModel, Physics, ActionType, ObservationType
 
+# Formation utilities for Procrustes/SVD-based reward (paper Section 4)
+from onpolicy.utils.formation import compute_formation_error
+
 
 class PyBulletDroneWrapper:
     """
@@ -44,6 +47,9 @@ class PyBulletDroneWrapper:
         ctrl_freq: int = 48,  # Match simulation's 48Hz (240/5)
         episode_len_sec: float = 8.0,
         collision_dist: float = 0.1,
+        w_nav: float = 1.0,
+        w_avoid: float = 1.0,
+        collision_C: float = 1.0,
     ):
         """
         Initialize the PyBullet drone wrapper.
@@ -58,9 +64,15 @@ class PyBulletDroneWrapper:
             ctrl_freq: Control frequency (48Hz to match simulation)
             episode_len_sec: Episode length in seconds
             collision_dist: Distance threshold for collision detection
+            w_nav: Weight for navigation reward (paper Section 4)
+            w_avoid: Weight for collision avoidance reward (paper Section 4)
+            collision_C: Collision penalty constant C ~1 (paper Section 4)
         """
         self.num_drones = num_drones
         self.collision_dist = collision_dist
+        self.w_nav = w_nav
+        self.w_avoid = w_avoid
+        self.collision_C = collision_C
         
         # Initial positions: spread out horizontally
         initial_xyzs = np.zeros((num_drones, 3))
@@ -200,69 +212,84 @@ class PyBulletDroneWrapper:
         """
         return [raw_obs[i].astype(np.float32) for i in range(self.num_drones)]
     
-    def _compute_target_reward(
+    def _compute_reward(
         self, 
         states: np.ndarray,
     ) -> Tuple[List[float], List[Dict[str, float]]]:
         """
-        Compute per-drone reward based on MultiHoverAviary's TARGET_POS.
+        Compute reward as per MA-LSTM-PPO paper Section 4.
         
-        Each drone gets its own reward based on:
-        - Distance improvement toward its target (shaped)
-        - Proximity bonus (closer = higher)
-        - Goal reached bonus
-        - Collision penalty
-        - Alive bonus
+        Total reward (shared across all agents):
+            r = r_form + w_nav * r_nav + w_avoid * r_avoid
+        
+        Components:
+        - Formation error via Procrustes/SVD alignment:
+            E = (1/N) * sum_i || R @ p_i - t_i ||^2
+            G = max pairwise distance^2 of target formation
+            r_form = -E / (G + eps)
+        - Navigation reward (sum of distance improvements):
+            r_nav = sum_i (d_prev_i - d_curr_i)
+        - Collision avoidance penalty:
+            r_avoid = -C * num_collisions  (C ~1 per paper)
+        
+        Reference: docs/MA-LSTM-PPO-paper-summary.md Section 4
         
         Args:
             states: Drone states array (num_drones, state_dim)
             
         Returns:
-            rewards: List of per-drone rewards
-            reward_infos: List of per-drone reward info dicts
+            rewards: List of shared rewards (same value for all agents)
+            reward_infos: List of reward info dicts per agent
         """
         positions, _ = self._extract_positions_velocities(states)
         target_pos = self._env.TARGET_POS  # (num_drones, 3)
         
-        rewards = []
-        reward_infos = []
+        # --- 1. Formation reward (Procrustes/SVD) ---
+        # E = (1/N) * sum_i || R p_i - t_i ||^2,  G = max pairwise dist^2
+        E, G = compute_formation_error(positions, target_pos)
+        r_form = -E / (G + 1e-8)
         
+        # --- 2. Navigation reward (shared sum) ---
+        # r_nav = sum_i (d_prev_i - d_curr_i)
+        r_nav = 0.0
         for i in range(self.num_drones):
-            pos = positions[i]
-            target = target_pos[i]
-            dist = np.linalg.norm(target - pos)
-            
-            # Shaped reward: improvement in distance to target
-            r_progress = 5.0 * (self._prev_distances[i] - dist)
-            
-            # Proximity bonus (increases as drone approaches target)
-            r_proximity = max(0.0, 2.0 - dist ** 2)
-            
-            # Goal reached bonus
-            r_goal = 10.0 if dist < 0.05 else 0.0
-            
-            # Collision penalty with other drones
-            r_collision = 0.0
-            for j in range(self.num_drones):
-                if j != i:
-                    inter_dist = np.linalg.norm(positions[j] - pos)
-                    if inter_dist < self.collision_dist:
-                        r_collision -= 5.0
-            
-            # Alive bonus (encourages not crashing/truncating)
-            r_alive = 0.1
-            
-            total = r_progress + r_proximity + r_goal + r_collision + r_alive
-            
+            dist = np.linalg.norm(target_pos[i] - positions[i])
+            r_nav += (self._prev_distances[i] - dist)
             self._prev_distances[i] = dist
-            rewards.append(total)
-            reward_infos.append({
-                'r_progress': r_progress,
-                'r_proximity': r_proximity,
-                'r_goal': r_goal,
-                'r_collision': r_collision,
-                'dist_to_target': dist,
-            })
+        
+        # --- 3. Collision avoidance penalty ---
+        # r_avoid = -C * num_collisions
+        num_collisions = 0
+        for i in range(self.num_drones):
+            for j in range(i + 1, self.num_drones):
+                inter_dist = np.linalg.norm(positions[i] - positions[j])
+                if inter_dist < self.collision_dist:
+                    num_collisions += 1
+        r_avoid = -self.collision_C * num_collisions
+        
+        # --- Total reward (shared across all agents) ---
+        total_reward = r_form + self.w_nav * r_nav + self.w_avoid * r_avoid
+        
+        # All agents receive the same shared reward (paper Section 4)
+        rewards = [total_reward] * self.num_drones
+        
+        # Compute per-drone distances for logging
+        per_drone_dists = [np.linalg.norm(target_pos[i] - positions[i]) for i in range(self.num_drones)]
+        
+        reward_info = {
+            'r_form': r_form,
+            'r_nav': r_nav,
+            'r_avoid': r_avoid,
+            'formation_error': E,
+            'normalization_G': G,
+            'num_collisions': num_collisions,
+            'total_reward': total_reward,
+        }
+        reward_infos = []
+        for i in range(self.num_drones):
+            info_i = reward_info.copy()
+            info_i['dist_to_target'] = per_drone_dists[i]
+            reward_infos.append(info_i)
         
         return rewards, reward_infos
     
@@ -336,8 +363,8 @@ class PyBulletDroneWrapper:
         # Get states for reward computation and share_obs
         states = self._get_drone_states()
         
-        # Compute per-drone reward based on TARGET_POS
-        rewards_list, reward_infos = self._compute_target_reward(states)
+        # Compute reward per paper Section 4 (formation + navigation + collision)
+        rewards_list, reward_infos = self._compute_reward(states)
         
         # Compute observations - return as numpy arrays
         obs_n = raw_obs.astype(np.float32)  # Already (num_drones, obs_dim)
