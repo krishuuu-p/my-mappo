@@ -337,15 +337,15 @@ class BaseRLAviary(BaseAviary):
                 # Relative target position
                 rel_target = target_pos[i] - own_pos  # 3 dims
                 
-                # Neighbor states (all other drones)
+                # Neighbor states: RELATIVE position and velocity (matches simulation env)
                 neighbor_states = []
                 for j in range(self.NUM_DRONES):
                     if j != i:
                         state_j = all_states[j]
-                        neighbor_pos = state_j[0:3]
-                        neighbor_vel = state_j[10:13]
-                        neighbor_states.extend(neighbor_pos)
-                        neighbor_states.extend(neighbor_vel)
+                        rel_pos = state_j[0:3] - own_pos       # relative position
+                        rel_vel = state_j[10:13] - own_vel     # relative velocity
+                        neighbor_states.extend(rel_pos)
+                        neighbor_states.extend(rel_vel)
                 
                 # Concatenate all parts
                 obs[i, :] = np.concatenate([own_state, rel_target, neighbor_states])

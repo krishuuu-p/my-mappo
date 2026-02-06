@@ -19,7 +19,6 @@ from typing import List, Tuple, Dict, Any, Optional
 # Import from local gym_pybullet_drones copy
 from onpolicy.envs.gym_pybullet_drones.envs.MultiHoverAviary import MultiHoverAviary
 from onpolicy.envs.gym_pybullet_drones.utils.enums import DroneModel, Physics, ActionType, ObservationType
-from onpolicy.utils.formation import compute_formation_error, compute_normalization_factor
 
 
 class PyBulletDroneWrapper:
@@ -42,12 +41,8 @@ class PyBulletDroneWrapper:
         obs_type: ObservationType = ObservationType.KIN,
         act_type: ActionType = ActionType.VEL,  # VEL uses internal PID, accepts v_des
         pyb_freq: int = 240,
-        ctrl_freq: int = 30,
+        ctrl_freq: int = 48,  # Match simulation's 48Hz (240/5)
         episode_len_sec: float = 8.0,
-        target_formation: Optional[np.ndarray] = None,
-        use_formation_reward: bool = True,
-        w_nav: float = 0.1,
-        w_avoid: float = 1.0,
         collision_dist: float = 0.1,
     ):
         """
@@ -60,34 +55,12 @@ class PyBulletDroneWrapper:
             obs_type: Observation type (KIN for kinematic)
             act_type: Action type (VEL for velocity-based with internal PID)
             pyb_freq: PyBullet simulation frequency
-            ctrl_freq: Control frequency
+            ctrl_freq: Control frequency (48Hz to match simulation)
             episode_len_sec: Episode length in seconds
-            target_formation: Target formation shape (num_drones, 3) or None for default
-            use_formation_reward: Whether to use formation-based reward
-            w_nav: Weight for navigation reward (paper default)
-            w_avoid: Weight for collision avoidance penalty
             collision_dist: Distance threshold for collision detection
-            
-        Reference: docs/MA-LSTM-PPO-paper-summary.md Section 5 (hyperparameters)
         """
         self.num_drones = num_drones
-        self.use_formation_reward = use_formation_reward
-        self.w_nav = w_nav
-        self.w_avoid = w_avoid
         self.collision_dist = collision_dist
-        
-        # Default triangular formation if not specified
-        if target_formation is None:
-            # Create a simple triangular formation
-            angles = np.linspace(0, 2 * np.pi, num_drones, endpoint=False)
-            radius = 0.5
-            self.target_formation = np.stack([
-                radius * np.cos(angles),
-                radius * np.sin(angles),
-                np.ones(num_drones)  # All at height 1.0
-            ], axis=1)
-        else:
-            self.target_formation = target_formation
         
         # Initial positions: spread out horizontally
         initial_xyzs = np.zeros((num_drones, 3))
@@ -129,9 +102,9 @@ class PyBulletDroneWrapper:
             # For 3 drones: 6 + 3 + 6*2 = 21
             self.obs_dim = 6 + 3 + 6 * (self.num_drones - 1)
         
-        # Share observation: positions (3) + velocities (3) for all agents, concatenated
-        # Reference: docs/MA-LSTM-PPO-paper-summary.md Section 2 (Centralized Critic input)
-        self.share_obs_dim_per_agent = 6  # pos(3) + vel(3)
+        # Share observation: positions (3) + velocities (3) + target_pos (3) for all agents
+        # Gives the centralized critic full information about where drones are and should go
+        self.share_obs_dim_per_agent = 9  # pos(3) + vel(3) + target(3)
         self.share_obs_dim = self.num_drones * self.share_obs_dim_per_agent
         
         # Create spaces (lists for MAPPO compatibility)
@@ -203,9 +176,12 @@ class PyBulletDroneWrapper:
         """
         positions, velocities = self._extract_positions_velocities(states)
         
-        # Concatenate pos and vel for each agent, then flatten
-        agent_share_info = np.concatenate([positions, velocities], axis=1)  # (num_drones, 6)
-        share_obs_flat = agent_share_info.flatten()  # (num_drones * 6,)
+        # Get target positions from the underlying env
+        target_pos = self._env.TARGET_POS  # (num_drones, 3)
+        
+        # Concatenate pos + vel + target for each agent, then flatten
+        agent_share_info = np.concatenate([positions, velocities, target_pos], axis=1)  # (num_drones, 9)
+        share_obs_flat = agent_share_info.flatten()  # (num_drones * 9,)
         
         # Tile for each agent (each agent gets the same share_obs)
         share_obs = np.tile(share_obs_flat, (self.num_drones, 1))  # (num_drones, share_obs_dim)
@@ -224,60 +200,71 @@ class PyBulletDroneWrapper:
         """
         return [raw_obs[i].astype(np.float32) for i in range(self.num_drones)]
     
-    def _compute_formation_reward(
+    def _compute_target_reward(
         self, 
-        positions: np.ndarray,
-        prev_positions: Optional[np.ndarray] = None
-    ) -> Tuple[float, Dict[str, float]]:
+        states: np.ndarray,
+    ) -> Tuple[List[float], List[Dict[str, float]]]:
         """
-        Compute formation-based reward as per MA-LSTM-PPO paper.
+        Compute per-drone reward based on MultiHoverAviary's TARGET_POS.
         
-        Reference: docs/MA-LSTM-PPO-paper-summary.md Section 4 (Reward)
-        
-        r = r_form + w_nav * r_nav + w_avoid * r_avoid
+        Each drone gets its own reward based on:
+        - Distance improvement toward its target (shaped)
+        - Proximity bonus (closer = higher)
+        - Goal reached bonus
+        - Collision penalty
+        - Alive bonus
         
         Args:
-            positions: Current drone positions (num_drones, 3)
-            prev_positions: Previous positions for navigation reward
+            states: Drone states array (num_drones, state_dim)
             
         Returns:
-            total_reward: Scalar reward
-            reward_info: Dict with reward components
+            rewards: List of per-drone rewards
+            reward_infos: List of per-drone reward info dicts
         """
-        # Formation error using Procrustes alignment
-        E, G = compute_formation_error(positions, self.target_formation)
-        r_form = -E / (G + 1e-8)
+        positions, _ = self._extract_positions_velocities(states)
+        target_pos = self._env.TARGET_POS  # (num_drones, 3)
         
-        # Navigation reward: reduction in distance to target formation center
-        r_nav = 0.0
-        if prev_positions is not None:
-            target_center = np.mean(self.target_formation, axis=0)
-            prev_center = np.mean(prev_positions, axis=0)
-            curr_center = np.mean(positions, axis=0)
-            prev_dist = np.linalg.norm(prev_center - target_center)
-            curr_dist = np.linalg.norm(curr_center - target_center)
-            r_nav = prev_dist - curr_dist
+        rewards = []
+        reward_infos = []
         
-        # Collision avoidance penalty
-        num_collisions = 0
         for i in range(self.num_drones):
-            for j in range(i + 1, self.num_drones):
-                dist = np.linalg.norm(positions[i] - positions[j])
-                if dist < self.collision_dist:
-                    num_collisions += 1
-        r_avoid = -num_collisions
+            pos = positions[i]
+            target = target_pos[i]
+            dist = np.linalg.norm(target - pos)
+            
+            # Shaped reward: improvement in distance to target
+            r_progress = 5.0 * (self._prev_distances[i] - dist)
+            
+            # Proximity bonus (increases as drone approaches target)
+            r_proximity = max(0.0, 2.0 - dist ** 2)
+            
+            # Goal reached bonus
+            r_goal = 10.0 if dist < 0.05 else 0.0
+            
+            # Collision penalty with other drones
+            r_collision = 0.0
+            for j in range(self.num_drones):
+                if j != i:
+                    inter_dist = np.linalg.norm(positions[j] - pos)
+                    if inter_dist < self.collision_dist:
+                        r_collision -= 5.0
+            
+            # Alive bonus (encourages not crashing/truncating)
+            r_alive = 0.1
+            
+            total = r_progress + r_proximity + r_goal + r_collision + r_alive
+            
+            self._prev_distances[i] = dist
+            rewards.append(total)
+            reward_infos.append({
+                'r_progress': r_progress,
+                'r_proximity': r_proximity,
+                'r_goal': r_goal,
+                'r_collision': r_collision,
+                'dist_to_target': dist,
+            })
         
-        # Total reward
-        total_reward = r_form + self.w_nav * r_nav + self.w_avoid * r_avoid
-        
-        reward_info = {
-            'r_form': r_form,
-            'r_nav': r_nav,
-            'r_avoid': r_avoid,
-            'formation_error': E,
-        }
-        
-        return total_reward, reward_info
+        return rewards, reward_infos
     
     def reset(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -296,8 +283,11 @@ class PyBulletDroneWrapper:
         states = self._get_drone_states()
         positions, _ = self._extract_positions_velocities(states)
         
-        # Store for computing navigation reward
-        self._prev_positions = positions.copy()
+        # Initialize per-drone distances to TARGET_POS for shaped reward
+        self._prev_distances = np.array([
+            np.linalg.norm(self._env.TARGET_POS[i] - positions[i])
+            for i in range(self.num_drones)
+        ])
         
         # Compute observations - return as numpy arrays instead of lists
         obs_n = raw_obs.astype(np.float32)  # Already (num_drones, obs_dim)
@@ -345,32 +335,24 @@ class PyBulletDroneWrapper:
         
         # Get states for reward computation and share_obs
         states = self._get_drone_states()
-        positions, _ = self._extract_positions_velocities(states)
         
-        # Compute formation reward if enabled
-        if self.use_formation_reward:
-            reward, reward_info = self._compute_formation_reward(positions, self._prev_positions)
-        else:
-            reward = base_reward
-            reward_info = {}
-        
-        # Update previous positions
-        self._prev_positions = positions.copy()
+        # Compute per-drone reward based on TARGET_POS
+        rewards_list, reward_infos = self._compute_target_reward(states)
         
         # Compute observations - return as numpy arrays
         obs_n = raw_obs.astype(np.float32)  # Already (num_drones, obs_dim)
         share_obs = self._compute_share_obs(states)  # (num_drones, share_obs_dim)
         
         # MAPPO expects list format for rewards and dones
-        rewards_n = [[reward / self.num_drones] for _ in range(self.num_drones)]  # Shared reward
+        rewards_n = [[r] for r in rewards_list]  # Per-drone individual rewards
         dones_n = [done for _ in range(self.num_drones)]
         
         # Build info dicts
         infos_n = []
         for i in range(self.num_drones):
             agent_info = {
-                'individual_reward': reward / self.num_drones,
-                **reward_info
+                'individual_reward': rewards_list[i],
+                **reward_infos[i]
             }
             infos_n.append(agent_info)
         
@@ -402,12 +384,10 @@ def make_pybullet_drone_env(all_args):
     """
     num_drones = getattr(all_args, 'num_drones', 3)
     gui = getattr(all_args, 'render', False)
-    use_formation_reward = getattr(all_args, 'use_formation_reward', True)
     
     env = PyBulletDroneWrapper(
         num_drones=num_drones,
         gui=gui,
-        use_formation_reward=use_formation_reward,
     )
     
     return env

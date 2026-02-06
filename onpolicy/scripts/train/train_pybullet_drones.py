@@ -47,7 +47,6 @@ def make_train_env(all_args):
             env = PyBulletDroneWrapper(
                 num_drones=all_args.num_drones,
                 gui=False,  # No GUI for training
-                use_formation_reward=True,
             )
             env.seed(all_args.seed + rank * 1000)
             return env
@@ -74,7 +73,6 @@ def make_eval_env(all_args):
             env = PyBulletDroneWrapper(
                 num_drones=all_args.num_drones,
                 gui=False,
-                use_formation_reward=True,
             )
             env.seed(all_args.seed * 50000 + rank * 10000)
             return env
@@ -122,24 +120,22 @@ def main(args):
         all_args.use_recurrent_policy = True
         all_args.use_naive_recurrent_policy = False
         all_args.algorithm_name = "rmappo"  # Use recurrent MAPPO trainer
+        # recurrent_N=2: buffer stores both h (hidden) and c (cell) LSTM states
+        all_args.recurrent_N = 2
     else:
         print("Using standard MAPPO model")
         all_args.use_recurrent_policy = True
         all_args.use_naive_recurrent_policy = False
         all_args.algorithm_name = "rmappo"
     
-    # Set paper default hyperparameters if not specified
+    # Set paper default hyperparameters
     # Reference: docs/MA-LSTM-PPO-paper-summary.md Section 5
-    if not hasattr(all_args, 'lr') or all_args.lr == 5e-4:
-        all_args.lr = 5e-4  # Paper default
-    if not hasattr(all_args, 'gamma') or all_args.gamma == 0.99:
-        all_args.gamma = 0.99  # Paper default
-    if not hasattr(all_args, 'gae_lambda') or all_args.gae_lambda == 0.95:
-        all_args.gae_lambda = 0.95  # Paper default
-    if not hasattr(all_args, 'clip_param') or all_args.clip_param == 0.2:
-        all_args.clip_param = 0.2  # Paper default
-    if not hasattr(all_args, 'episode_length'):
-        all_args.episode_length = 242  # Paper suggests ~242 timesteps
+    all_args.lr = 5e-4
+    all_args.gamma = 0.99
+    all_args.gae_lambda = 0.95
+    all_args.clip_param = 0.2
+    # Episode length must match env: 8s * 48Hz ctrl_freq = 384 steps
+    all_args.episode_length = 384
     
     # CUDA setup
     if all_args.cuda and torch.cuda.is_available():

@@ -192,24 +192,21 @@ class LSTMActor(nn.Module):
         # Prepare LSTM input (batch, seq_len=1, hidden_size)
         lstm_input = features.unsqueeze(1)
         
-        # Handle RNN states: buffer stores (batch, num_layers, hidden)
-        # Need to transpose to (num_layers, batch, hidden) for LSTM
-        rnn_states_transposed = rnn_states.transpose(0, 1)  # (num_layers, batch, hidden)
+        # Handle RNN states: buffer stores (batch, recurrent_N=2, hidden_size)
+        # recurrent_N=2: index 0 = h (hidden state), index 1 = c (cell state)
+        n_layers = self.num_lstm_layers  # actual LSTM layers (1)
+        h_state = rnn_states[:, :n_layers, :]   # (batch, 1, hidden)
+        c_state = rnn_states[:, n_layers:, :]   # (batch, 1, hidden)
+        
+        # Transpose to LSTM format: (num_layers, batch, hidden)
+        h = h_state.transpose(0, 1)  # (1, batch, hidden)
+        c = c_state.transpose(0, 1)  # (1, batch, hidden)
         
         # Handle masks (reset hidden states where mask is 0)
         # masks shape: (batch, 1) -> need (1, batch, 1) for broadcasting
         mask_for_broadcast = masks.unsqueeze(0)  # (1, batch, 1)
-        
-        # Debug shapes when there's an issue
-        if rnn_states_transposed.shape[1] != mask_for_broadcast.shape[1]:
-            print(f"[ERROR] Shape mismatch:")
-            print(f"  rnn_states: {rnn_states.shape}")
-            print(f"  rnn_states_transposed: {rnn_states_transposed.shape}")
-            print(f"  masks: {masks.shape}")
-            print(f"  mask_for_broadcast: {mask_for_broadcast.shape}")
-        
-        h = rnn_states_transposed * mask_for_broadcast  # broadcasts to (num_layers, batch, hidden)
-        c = rnn_states_transposed * mask_for_broadcast
+        h = h * mask_for_broadcast
+        c = c * mask_for_broadcast
         
         # LSTM forward
         lstm_out, (h_new, c_new) = self.lstm(lstm_input, (h, c))
@@ -219,7 +216,6 @@ class LSTMActor(nn.Module):
         action_mean = self.action_mean(lstm_out)  # (batch, action_dim)
         
         # Apply tanh for bounded actions
-        # Reference: docs/MA-LSTM-PPO-paper-summary.md Section 2
         if self.use_tanh_output:
             action_mean = torch.tanh(action_mean) * self.action_scale
         
@@ -227,9 +223,9 @@ class LSTMActor(nn.Module):
         log_std = torch.clamp(self.log_std, self.log_std_min, self.log_std_max)
         action_std = torch.exp(log_std).expand_as(action_mean)
         
-        # Return hidden states in buffer format: (batch, num_layers, hidden)
-        # Average h and c or just use h
-        rnn_states_out = h_new.transpose(0, 1)  # (batch, num_layers, hidden)
+        # Return hidden states in buffer format: (batch, recurrent_N=2, hidden)
+        # Concatenate h_new and c_new: h at index 0, c at index 1
+        rnn_states_out = torch.cat([h_new, c_new], dim=0).transpose(0, 1)  # (batch, 2, hidden)
         
         return action_mean, action_std, rnn_states_out
     
@@ -418,11 +414,16 @@ class CentralizedCritic(nn.Module):
             lstm_input = features.unsqueeze(1)  # (batch, 1, hidden_size)
             
             if rnn_states is not None and masks is not None:
-                # Buffer format: (batch, num_layers, hidden)
-                rnn_states_transposed = rnn_states.transpose(0, 1)  # (num_layers, batch, hidden)
+                # Buffer format: (batch, recurrent_N=2, hidden)
+                # index 0 = h (hidden state), index 1 = c (cell state)
+                n_layers = self.num_lstm_layers  # actual LSTM layers (1)
+                h_state = rnn_states[:, :n_layers, :]   # (batch, 1, hidden)
+                c_state = rnn_states[:, n_layers:, :]   # (batch, 1, hidden)
+                h = h_state.transpose(0, 1)  # (1, batch, hidden)
+                c = c_state.transpose(0, 1)  # (1, batch, hidden)
                 mask_for_broadcast = masks.unsqueeze(0)  # (1, batch, 1)
-                h = rnn_states_transposed * mask_for_broadcast
-                c = rnn_states_transposed * mask_for_broadcast
+                h = h * mask_for_broadcast
+                c = c * mask_for_broadcast
             else:
                 batch_size = share_obs.shape[0]
                 h = torch.zeros(self.num_lstm_layers, batch_size, self.lstm_hidden_size).to(**self.tpdv)
@@ -430,8 +431,8 @@ class CentralizedCritic(nn.Module):
             
             lstm_out, (h_new, c_new) = self.lstm(lstm_input, (h, c))
             lstm_out = lstm_out.squeeze(1)
-            # Return in buffer format: (batch, num_layers, hidden)
-            rnn_states_out = h_new.transpose(0, 1)
+            # Return in buffer format: (batch, recurrent_N=2, hidden)
+            rnn_states_out = torch.cat([h_new, c_new], dim=0).transpose(0, 1)
             
             values = self.value_out(lstm_out)
         else:
@@ -500,12 +501,13 @@ class MA_LSTM_Policy(nn.Module):
         
         # Create actor network
         # Reference: docs/MA-LSTM-PPO-paper-summary.md Section 2 (Actor)
+        # Note: num_lstm_layers=1 always; recurrent_N=2 is only for buffer (stores h and c)
         self.actor = LSTMActor(
             obs_dim=self.obs_dim,
             action_dim=self.action_dim,
             hidden_size=hidden_size,
             lstm_hidden_size=hidden_size,
-            num_lstm_layers=recurrent_N,
+            num_lstm_layers=1,
             use_orthogonal=use_orthogonal,
             use_tanh_output=True,
             device=device,
@@ -517,7 +519,7 @@ class MA_LSTM_Policy(nn.Module):
             share_obs_dim=self.share_obs_dim,
             hidden_size=hidden_size,
             lstm_hidden_size=hidden_size,
-            num_lstm_layers=recurrent_N,
+            num_lstm_layers=1,
             use_lstm=True,
             use_orthogonal=use_orthogonal,
             device=device,
