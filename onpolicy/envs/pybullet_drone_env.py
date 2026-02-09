@@ -74,10 +74,16 @@ class PyBulletDroneWrapper:
         self.w_avoid = w_avoid
         self.collision_C = collision_C
         
-        # Initial positions: spread out horizontally
+        # RANDOMIZED Initial positions for generalization
+        # Range: x,y ∈ [-1.5, 1.5], z ∈ [0.1, 0.5]
+        # This ensures diverse starting configurations during training
         initial_xyzs = np.zeros((num_drones, 3))
         for i in range(num_drones):
-            initial_xyzs[i] = [0.3 * (i - num_drones/2), 0, 0.1]
+            initial_xyzs[i] = [
+                np.random.uniform(-1.5, 1.5),  # Random X
+                np.random.uniform(-1.5, 1.5),  # Random Y
+                np.random.uniform(0.1, 0.5)     # Random Z (above ground)
+            ]
         
         # Create the underlying environment
         # ActionType.VEL accepts velocity commands and uses internal PID to compute RPMs

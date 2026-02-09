@@ -68,8 +68,51 @@ class MultiHoverAviary(BaseRLAviary):
                          obs=obs,
                          act=act
                          )
-        self.TARGET_POS = self.INIT_XYZS + np.array([[0,0,1/(i+1)] for i in range(num_drones)])
+        # RANDOMIZED Target positions for generalization
+        # Each target is 1-3 meters away from initial position in random direction
+        self.TARGET_POS = np.zeros_like(self.INIT_XYZS)
+        for i in range(num_drones):
+            distance = np.random.uniform(1.0, 3.0)  # Random distance to target
+            angle = np.random.uniform(0, 2 * np.pi)  # Random horizontal direction
+            z_offset = np.random.uniform(0.3, 1.5)   # Random vertical offset
+            
+            self.TARGET_POS[i] = self.INIT_XYZS[i] + [
+                distance * np.cos(angle),  # X offset
+                distance * np.sin(angle),  # Y offset
+                z_offset                   # Z offset
+            ]
 
+    ################################################################################
+    
+    def reset(self, seed=None, options=None):
+        """
+        Reset environment with RANDOMIZED initial and target positions.
+        
+        This ensures the model learns general navigation skills, not memorization.
+        """
+        # Randomize initial positions before reset
+        for i in range(self.NUM_DRONES):
+            self.INIT_XYZS[i] = [
+                np.random.uniform(-1.5, 1.5),  # Random X
+                np.random.uniform(-1.5, 1.5),  # Random Y
+                np.random.uniform(0.1, 0.5)     # Random Z (above ground)
+            ]
+        
+        # Randomize target positions relative to new initial positions
+        for i in range(self.NUM_DRONES):
+            distance = np.random.uniform(1.0, 3.0)  # Random distance to target
+            angle = np.random.uniform(0, 2 * np.pi)  # Random horizontal direction
+            z_offset = np.random.uniform(0.3, 1.5)   # Random vertical offset
+            
+            self.TARGET_POS[i] = self.INIT_XYZS[i] + [
+                distance * np.cos(angle),  # X offset
+                distance * np.sin(angle),  # Y offset
+                z_offset                   # Z offset
+            ]
+        
+        # Call parent reset which will use the updated INIT_XYZS
+        return super().reset(seed=seed, options=options)
+    
     ################################################################################
     
     def _computeReward(self):
