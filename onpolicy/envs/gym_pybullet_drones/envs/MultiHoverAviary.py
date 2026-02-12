@@ -142,13 +142,13 @@ class MultiHoverAviary(BaseRLAviary):
 
         """
         states = np.array([self._getDroneStateVector(i) for i in range(self.NUM_DRONES)])
-        dist = 0
+        # Check if ALL drones reached their targets
+        # Using 0.05m (5cm) threshold per drone (matching DMPC-Swarm)
         for i in range(self.NUM_DRONES):
-            dist += np.linalg.norm(self.TARGET_POS[i,:]-states[i][0:3])
-        if dist < .0001:
-            return True
-        else:
-            return False
+            dist = np.linalg.norm(self.TARGET_POS[i,:]-states[i][0:3])
+            if dist > 0.05:  # 5cm threshold per drone
+                return False
+        return True  # All drones within 5cm of targets
 
     ################################################################################
     

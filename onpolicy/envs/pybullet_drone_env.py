@@ -295,6 +295,8 @@ class PyBulletDroneWrapper:
         for i in range(self.num_drones):
             info_i = reward_info.copy()
             info_i['dist_to_target'] = per_drone_dists[i]
+            info_i['current_pos'] = positions[i].tolist() if hasattr(positions[i], 'tolist') else list(positions[i])
+            info_i['target_pos'] = target_pos[i].tolist() if hasattr(target_pos[i], 'tolist') else list(target_pos[i])
             reward_infos.append(info_i)
         
         return rewards, reward_infos
@@ -316,11 +318,19 @@ class PyBulletDroneWrapper:
         states = self._get_drone_states()
         positions, _ = self._extract_positions_velocities(states)
         
+        # Store initial positions and targets for logging
+        self._episode_initial_positions = positions.copy()
+        self._episode_target_positions = self._env.TARGET_POS.copy()
+        self._episode_step_count = 0
+        self._episode_cumulative_reward = 0.0
+        self._episode_terminated_early = False
+        
         # Initialize per-drone distances to TARGET_POS for shaped reward
         self._prev_distances = np.array([
             np.linalg.norm(self._env.TARGET_POS[i] - positions[i])
             for i in range(self.num_drones)
         ])
+        self._episode_initial_distances = self._prev_distances.copy()
         
         # Compute observations - return as numpy arrays instead of lists
         obs_n = raw_obs.astype(np.float32)  # Already (num_drones, obs_dim)
@@ -380,13 +390,38 @@ class PyBulletDroneWrapper:
         rewards_n = [[r] for r in rewards_list]  # Per-drone individual rewards
         dones_n = [done for _ in range(self.num_drones)]
         
+        # Track episode progress
+        self._episode_step_count += 1
+        self._episode_cumulative_reward += reward_infos[0].get('total_reward', rewards_list[0])
+        if terminated:
+            self._episode_terminated_early = True
+        
         # Build info dicts
         infos_n = []
+        positions, velocities = self._extract_positions_velocities(states)
         for i in range(self.num_drones):
             agent_info = {
                 'individual_reward': rewards_list[i],
+                'current_position': positions[i].tolist(),
+                'current_velocity': velocities[i].tolist(),
                 **reward_infos[i]
             }
+            # Add episode summary info on done (accessible by runner before auto-reset)
+            if done:
+                agent_info['episode_summary'] = {
+                    'initial_position': self._episode_initial_positions[i].tolist(),
+                    'final_position': positions[i].tolist(),
+                    'target_position': self._episode_target_positions[i].tolist(),
+                    'initial_distance': float(self._episode_initial_distances[i]),
+                    'final_distance': float(reward_infos[i]['dist_to_target']),
+                    'distance_improvement': float(self._episode_initial_distances[i] - reward_infos[i]['dist_to_target']),
+                    'reached_target': reward_infos[i]['dist_to_target'] < 0.05,
+                    'direction_traveled': (positions[i] - self._episode_initial_positions[i]).tolist(),
+                    'direction_to_target': (self._episode_target_positions[i] - self._episode_initial_positions[i]).tolist(),
+                }
+                agent_info['episode_steps'] = self._episode_step_count
+                agent_info['episode_cumulative_reward'] = self._episode_cumulative_reward
+                agent_info['episode_terminated_early'] = self._episode_terminated_early
             infos_n.append(agent_info)
         
         # All actions available for continuous control
