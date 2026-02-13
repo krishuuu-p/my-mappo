@@ -44,7 +44,7 @@ class PyBulletDroneWrapper:
         obs_type: ObservationType = ObservationType.KIN,
         act_type: ActionType = ActionType.VEL,  # VEL uses internal PID, accepts v_des
         pyb_freq: int = 240,
-        ctrl_freq: int = 48,  # Match simulation's 48Hz (240/5)
+        ctrl_freq: int = 30,  # Paper default: 30Hz → episode_length=8*30=240≈242 (Table 3)
         episode_len_sec: float = 8.0,
         collision_dist: float = 0.1,
         w_form: float = 0.1,
@@ -282,7 +282,7 @@ class PyBulletDroneWrapper:
         
         # --- 5. Reaching bonus ---
         # +1.0 per drone within 5cm of its target
-        r_reached = sum(1.0 for d in current_distances if d < 0.05)
+        r_reached = sum(1.0 for d in current_distances if d < 0.50)
         
         # --- Total reward (shared across all agents) ---
         total_reward = (self.w_form * r_form 
@@ -432,7 +432,7 @@ class PyBulletDroneWrapper:
                     'initial_distance': float(self._episode_initial_distances[i]),
                     'final_distance': float(reward_infos[i]['dist_to_target']),
                     'distance_improvement': float(self._episode_initial_distances[i] - reward_infos[i]['dist_to_target']),
-                    'reached_target': reward_infos[i]['dist_to_target'] < 0.05,
+                    'reached_target': reward_infos[i]['dist_to_target'] < 0.50,
                     'direction_traveled': (positions[i] - self._episode_initial_positions[i]).tolist(),
                     'direction_to_target': (self._episode_target_positions[i] - self._episode_initial_positions[i]).tolist(),
                 }

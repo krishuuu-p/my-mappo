@@ -1,0 +1,542 @@
+# An Approach to UAV Distributed Formation Control with Improved PPO Algorithm
+---
+
+## Abstract
+
+Formation control is a prominent research focus in unmanned aerial vehicle (UAV) intelligent swarm control. Traditional approaches to formation control are fundamentally constrained in practical applications, as accurate modeling becomes infeasible under environmental uncertainties and external perturbations. As a result, the proximal policy optimization (PPO) algorithm based on deep reinforcement learning (DRL) has become the mainstream approach. However, the algorithm mostly adopts a leader-follower formation strategy, which sacrifices cooperation among agents and ultimately leads to suboptimal multi-agent collaboration performance. Addressing these issues, this study proposes an approach to UAV distributed formation control based on long short-term memory (LSTM) networks and the multi-agent proximal policy optimization (MA-LSTM-PPO) algorithm. Firstly, a distributed strategy is introduced, proposing a relative formation approach that does not rely on global positional information and avoids the leader-follower structure. Secondly, the centralized training and decentralized execution (CTDE) framework is adopted to extend the PPO algorithm to multi-agent systems, and an LSTM-based recurrent neural network (RNN) is integrated into the environment perception module of the proximal policy optimization network to capture long-term dependencies in sequential data. To evaluate the practical applicability of the proposed approach to UAV distributed formation control under physical constraints, a simulation environment supporting quadrotor UAV dynamics was constructed using PyBullet simulation platform. Experimental results demonstrate that the approach is both feasible and effective, outperforming traditional approaches to formation control and the approaches to DRL-based leader-follower. It exhibits superior performance in terms of formation error, convergence speed, and navigation rewards.
+
+
+
+## 2. Basic Principles and Methods
+
+This section provides a brief introduction to the kinematic model of a quadrotor UAV and the deep reinforcement learning algorithm.
+
+### 2.1 UAV Motion Model
+
+In this study, the Crazyflie 2.0 open-source UAV developed by Bitcraze is used to simulate the system dynamics of the quadrotor UAV. Its physical parameters (Giernacki et al., 2017) are listed in Table 1, and the physical model of the quadrotor is illustrated in Fig. 1.
+
+#### Table 1: Physical Parameters of the Quadrotor UAV
+
+| Parameter Name | Description | Value |
+|----------------|-------------|-------|
+| m | UAV mass | 0.027kg |
+| l | Arm length | 0.046m |
+| Ixx | Moment of inertia around x-axis | 1.66556×10⁻⁵ Ns/rad |
+| Iyy | Moment of inertia around y-axis | 1.65717×10⁻⁵ Ns/rad |
+| Izz | Moment of inertia around z-axis | 2.92617×10⁻⁵ Ns/rad |
+| κ | Anti-torque coefficient | 0.00596m |
+
+#### Figure 1: Physical Model of the Quadrotor UAV
+
+The quadrotor UAV is modeled as a rigid body driven by four motors. Its system dynamics are based on quadrotor dynamic models commonly used in real-world experiments for control algorithm design (Mellinger et al., 2012) and are formulated as:
+
+```
+ẋ = v                                                    (2)
+q̇ = (1/2)Λ(ψ) · q                                       (3)
+v̇ = q ⊙ c - g - RDRᵀv                                   (4)
+ψ̇ = J⁻¹(η - ψ × (Jψ))                                   (5)
+```
+
+Where:
+- **x** denotes the position
+- **v** denotes the linear velocity in the world frame
+- **D = diag(dₓ, dᵧ, dᵤ)** is a constant diagonal matrix defining rotor drag coefficients, representing linear effects on velocity
+- **q** is the unit quaternion representing the UAV orientation
+- **ψ** denotes the body angular velocity
+- **g = [0, 0, -gᵤ]ᵀ**, **gᵤ = 9.81 m/s²** is the gravitational vector
+- **Λ(ψ)** denotes the skew-symmetric matrix
+- **c** is the mass-normalized thrust vector
+
+Since the PyBullet simulation platform uses URDF files to load the quadrotor's CAD models, its dynamic characteristics can be accurately simulated. The force applied to each of the four motors **fᵢ** and the torque **η** generated about the UAV's z-axis are proportional to the square of the motor speed **Pᵢ** (in RPM), which are linearly related to the PWMs inputs. Assuming immediate control over these inputs (Shi et al., 2019), the conversion from individual rotor thrusts **fᵢ** to mass-normalized thrust **c** and body torques **η** is given by:
+
+```
+fᵢ = kf · Pᵢ²                                           (6)
+c = (kf Σ³ᵢ₌₀ Pᵢ²)m⁻¹                                   (7)
+η = [l/√2(f₁ - f₂ - f₃ + f₄),
+     l/√2(-f₁ - f₂ + f₃ + f₄),                         (8)
+     κf₁ - κf₂ + κf₃ - κf₄]
+```
+
+where:
+- **kf** and **kᵀ** are constants
+- **f₁, f₂, f₃, f₄** denotes the thrust generated by the single rotor
+- **m** is the UAV mass
+- **l** is the arm length
+- **κ** represents the torque generated by the motor in the local frame
+
+### 2.2 Proximal Policy Optimization Algorithm
+
+In reinforcement learning (RL), the agent continuously interacts with the environment and optimizes its policy based on feedback received in the form of reward signals. RL algorithms are generally classified into two categories: value-based methods and policy gradient methods. Value-based methods efficiently estimate the optimal value function from experience data; however, they are primarily suited for discrete action spaces. When applied to continuous or high-dimensional action spaces, these methods often struggle to accurately approximate the action-value function, resulting in limited generalization ability and discontinuous policy representations. In contrast, policy gradient methods are naturally applicable to continuous action spaces, but they frequently suffer from low sample efficiency and high variance during policy updates, which can destabilize the training process and impede convergence. Moreover, optimization in high-dimensional action spaces becomes highly sensitive to hyperparameter tuning, further constraining their generalization capability and practical applicability. To address these limitations, researchers proposed the actor-critic algorithm architecture (Konda and Tsitsiklis, 1999), as shown in Fig. 2.
+
+#### Figure 2: Actor-Critic Algorithm Architecture
+
+In the actor-critic algorithm framework, the critic network evaluates actions by estimating the value function, while the actor network outputs actions based on the current observations. The critic's single-step update mechanism alleviates the efficiency bottleneck of traditional policy gradient methods, while guiding the actor network to generate more optimal actions.
+
+In the actor-critic algorithm, the critic estimates the cumulative discounted reward (V-Value) for a given state, which assists in training the actor. The policy gradient objective is defined as:
+
+```
+∇ℛ(τ) = 𝔼τ~πθ(τ)[Aᵖ(sₜ, aₜ)∇log pθ(aₜ|sₜ)]          (9)
+```
+
+where **pθ(aₜ|sₜ)** denotes the probability of selecting action **a** given state **s**. Obviously, **∇log pθ(aₜ|sₜ)** is the logarithmic gradient of the policy, indicating how to adjust the policy parameters to increase the probability of selecting the current action. The advantage function **Aᵖ(sₜ, aₜ)** is calculated as:
+
+```
+Aᵖ(s, a) ≈ r + γVᵖ(s′) - Vᵖ(s)                       (10)
+```
+
+Where:
+- **Vᵖ(s)** is the state value function
+- **s′** is the next state
+- **γ** is the discount factor
+
+The critic network is trained to minimize the mean squared error:
+
+```
+L(w) = (1/2)𝔼[(r + γVᵖ(s′) - Vᵖ(s))²]                (11)
+```
+
+Where **w** is the weight of the Critic network.
+
+The critic gradient update is:
+
+```
+∇wL(w) = (r + γVᵖ(s′) - Vᵖ(s))∇wVᵖ(s)                (12)
+```
+
+Meanwhile, the actor network updates its parameters based on the TD-error feedback provided by the critic:
+
+```
+θ ← θ + α · ∇θlog πθ(a|s) · δ                        (13)
+```
+
+Where:
+- **δ = r + γVᵖ(s′) - Vᵖ(s)** is the TD-error
+- **α** is the learning rate
+
+At present, actor-critic-based algorithms such as deep deterministic policy gradient (DDPG), PPO, and asynchronous advantage actor-critic (A3C) (Babaeizadeh et al., 2016) have been widely applied. However, DDPG and A3C face difficulties in selecting appropriate learning rates for gradient updates. If the learning rate is too large, the algorithm may fail to achieve desirable convergence; conversely, if the learning rate is too small, although it can ensure that no local optima are overlooked, it significantly slows down the training process and increases the risk of overfitting. To address this issue, Schulman et al. (Schulman et al., 2015a) proposed the trust region policy optimization (TRPO) algorithm. The core idea of TRPO is to explicitly constrain the Kullback–Leibler (KL) divergence between the old and new policies within the same batch of data, thereby ensuring stability during policy updates without requiring delicate tuning of the learning rate. However, since TRPO involves complex second-order optimization, Schulman et al. (Schulman et al., 2017) subsequently introduced the PPO algorithm based on first-order derivatives to reduce algorithmic complexity. PPO refines the TRPO objective by directly imposing upper and lower bounds on policy updates. While this avoids the need for complicated KL divergence calculations; it also transforms the constrained optimization problem into an unconstrained one. As a result, PPO achieves performance comparable to that of the original TRPO while significantly simplifying the optimization process.
+
+During training, if the difference between the new and old policies becomes too large, it can negatively impact learning. To prevent this, PPO uses a clipped surrogate objective (Schulman et al., 2017):
+
+```
+𝔼x~p[f(x)] = ∫ f(x)p(x)dx = ∫ f(x)(p(x)/q(x))q(x)dx = 𝔼x~q[f(x)(p(x)/q(x))]   (14)
+
+ℒCLIP(θ) = Êₜ{min[(πθ(aₜ|sₜ)/πθold(aₜ|sₜ))Âₜ, clip(πθ(aₜ|sₜ)/πθold(aₜ|sₜ), 1-ε, 1+ε)Âₜ]}   (15)
+```
+
+Where **πθ(aₜ|sₜ)/πθold(aₜ|sₜ)** is the probability ratio between the new and old policies for a given action. The clipping range constrains updates to avoid excessively large policy changes.
+
+---
+
+## 3. Improved PPO Based Multi-UAV Formation Control
+
+### 3.1 DRL Structure for UAV Distributed Formation Control
+
+In a multi-agent environment, cooperative UAVs are modeled as independent agents. During task execution, each UAV must make decisions based not only on its state but also on the states of neighboring UAVs, since these states can influence individual decision-making. UAV distributed formation control can thus be viewed as a fully cooperative problem, which can be formulated as an extension of the Markov decision process (MDP) for multiple agents. The multi-agent DRL process involving N UAVs can be modeled as the extension of N individual MDPs.
+
+A Markov game is typically defined by the tuple **(S, A, R, P, γ)**, where:
+- **S** is the state space
+- **A** is the action space
+- **R** is the reward space
+- **P** denotes the state transition probability
+- **γ** is the discount factor
+
+**S**, **A** and **R** are defined as joint spaces formed by the Cartesian product of individual agents' state, action, and reward spaces. At each timestep **t**, agent **i** observes a state **sᵗᵢ ∈ S** and responds with an action **aᵗᵢ ∈ A** according to its policy, leading to a new state **sᵗ⁺¹ᵢ** under transition probability **P(sᵗ⁺¹ᵢ | sᵗᵢ, aᵗ₁, ..., aᵗₙ)**.
+
+Figure 3 illustrates the Markov-based UAV agent training and testing framework, where each UAV is treated as an independent agent.
+
+#### Figure 3: DRL Structure for UAV Formation
+
+**Training Process:**
+
+(1) Each agent is trained using the improved PPO algorithm, with the actor network outputting actions based on local observations.
+
+(2) The critic network evaluates the actions using the joint state and action information from all agents.
+
+(3) Actor and critic parameters are updated based on the critic's evaluations and the environmental rewards to maximize expected future returns.
+
+This training loop is iteratively executed until the formation control model stably outputs action policies that meet task requirements.
+
+Once training is complete, UAVs can autonomously execute learned formation tasks during the testing phase.
+
+#### 3.1.1 State Representation and Action Space
+
+**(1) Observation Spaces**
+
+In a networked multi-UAV system, the adjacency matrix **d∈ℝᴺˣᴺ dᵢⱼ** is used to express neighboring UAV relationships (within a communication radius **R**). For each UAV, its observation space includes its own dynamic state and the relative distances to neighboring UAVs:
+
+```
+{n:{ state :[...], neighbors :[dn0,...,dnN]}}         (16)
+```
+
+The state tuple for UAV **n** is defined as:
+
+```
+{n:[xn, qn, rn, pn, jn, v̇n, ωn, [P0,P1,P2,P3]n]}      (17)
+```
+
+Where:
+- **xn = [x,y,z]n** is the position
+- **qn** is the quaternion representing orientation
+- **rn, pn, jn** are roll, pitch, and yaw angles
+- **v̇n** and **ωn** are linear and angular velocities
+- **[P0,P1,P2,P3]n** are the rotor speeds
+
+**(2) Action Spaces**
+
+Given the large number of UAVs and the high dimensionality of the state space, as well as the need to maintain UAV stability, the action space is directly defined by the rotor speeds **[P0,P1,P2,P3]n** of each quadrotor UAV. However, it is extremely challenging for the reinforcement learning-based formation control policy to directly output a distribution over motor speeds. Therefore, a desired velocity vector dictionary is introduced to control the UAVs, which is structured as follows:
+
+```
+{n:[vx, vy, vz, vM]n}                                  (18)
+```
+
+where **vx, vy, vz** are unit vector components, and **vM** is the desired speed magnitude. The conversion from desired velocities to PWM motor commands is delegated to a PID controller that includes position and attitude sub-controllers (Mellinger et al., 2011).
+
+#### 3.1.2 UAV Formation Representation
+
+Accurately defining formation error is crucial for measuring the geometric consistency between the actual and target formations in a distributed multi-agent system. We propose a formation error metric based on rigid-body transformation invariance.
+
+Let the target formation be **ℱ* = {p*₁, p*₂, ..., p*ᴺ}** with the desired global positions for each agent **i**, and the actual formation be **F**. A rigid-body transformation is defined by:
+
+
+
+
+
+
+
+
+
+
+
+
+```
+𝒯ω(ℱ) = {Rθpi + t | pi ∈ ℱ}                           (19)
+```
+
+Where:
+- **ω = (θ, t)** is the transformation parameter
+- **Rθ = [cos θ  -sin θ; sin θ   cos θ]** is the rotation matrix
+- **t ∈ ℝ²** is the translation vector
+
+The formation error **ℰ(ℱ, ℱ*)** is defined as the minimal mean squared deviation after optimal rigid-body transformation:
+
+```
+ℰ(ℱ, ℱ*) = minω Σᴺᵢ₌₁ ‖pi - 𝒯ω(p*i)‖²                 (20)
+```
+
+**Key properties of this formation error metric:**
+
+**(1) Geometric Invariance:**
+Formation shape is measured independently of absolute position and orientation, aligning with distributed systems that rely only on local observations.
+
+**(2) Normalization:**
+Introducing a scaling factor allows error comparison across different formation scales:
+
+```
+ℰ̃ = ℰ(ℱ, ℱ*) / G(ℱ*)                                 (21)
+```
+
+**(3) Differentiability:**
+The error function is continuously differentiable with respect to UAV positions, making it suitable for gradient-based reinforcement learning optimization.
+
+#### 3.1.3 Reward Function
+
+Reward design is critical for effective reinforcement learning. The proposed reward function integrates formation reward, navigation reward, and collision avoidance reward. The total reward is:
+
+```
+r = rform + w₁rnavi + w₂ravoid                         (22)
+```
+
+where **w₁** and **w₂** are weighting coefficients.
+
+The formation reward is designed based on the formation error defined in Equation (20). This error effectively captures the discrepancy between the actual formation and the desired formation. Specifically, given an ideal formation topology **ℱ***, the formation error **ℰ(ℱ, ℱ*)** can be used as an optimization objective within the reinforcement learning framework to quantify the deviation between the actual UAV formation and the target formation. In the proposed approach, the formation reward is formally defined as:
+
+```
+rform = -ℰ̃ = -ℰ(ℱ, ℱ*) / G(ℱ*)                       (23)
+```
+
+Where **G(ℱ*) = maxᵢ,ⱼ∈𝒩 d²ᵢⱼ** is a normalization factor that depends solely on the scale and topology of the ideal formation. Here, **dᵢⱼ** denotes the distance between UAV **i** and UAV **j** within the formation.
+
+The introduction of **G(ℱ*)** ensures that the formation reward remains normalized across different formation scales, thereby avoiding the need for repeated tuning of the hyperparameters **w₁** and **w₂**. The navigation reward is designed to reflect the efficiency with which a UAV moves toward the destination. According to (Wang et al., 2019), the navigation reward is formulated as:
+
+```
+rnavi = Dᵗ⁻¹ᵢ - Dᵗᵢ                                    (24)
+```
+
+Where **Dᵗᵢ** represents the distance between UAV **i** and the destination at time step **t**. For collision avoidance, it is assumed that each UAV can obtain the relative distance to its neighboring UAVs through local communication. Based on this information, the collision avoidance reward function is defined as:
+
+```
+ravoid = {-1,  dij < davoid
+          0,   dij ≥ davoid                            (25)
+```
+
+Where **davoid** denotes the desired safe distance to be maintained between UAVs.
+
+Since multi-agent reinforcement learning is adopted in this study, each agent makes decisions independently. When a collision occurs, the affected UAV ceases interaction with the environment but does not terminate the entire training process. In such cases, the rewards of the swarm are impacted; however, the remaining UAVs continue their learning process. This mechanism ensures that UAVs which maintain normal operation can continue executing their tasks without being affected by the failures of neighboring agents.
+
+### 3.2 Improved PPO Algorithm
+
+#### 3.2.1 Proximal Policy Optimization with CTDE
+
+In multi-agent systems, the reward received by each agent depends not only on its actions but also on the actions of other agents. Consequently, modifying the policy of a single agent may alter the optimal strategies of others, leading to inaccuracies in value function estimation and making it difficult to guarantee the convergence of the algorithm.
+
+To address this issue, this study adopts the concept of the CTDE framework (Simoes et al., 2020) to extend the PPO algorithm to the domain of multi-UAV formation control, and proposes a multi-agent proximal policy optimization (MA-PPO) algorithm. The overall CTDE framework is illustrated in Fig. 4.
+
+#### Figure 4: CTDE Framework
+
+As shown in Fig. 4, compared to the single-agent environment, the input to the critic network consists of the joint observations from all UAVs, effectively functioning as a centralized controller that aggregates richer information from all agents.
+
+The actor network is updated to maximize the following objective:
+
+```
+ℒ(θ) = (1/ℬn) Σᵢ₌₁ᴮ Σᵏ₌₁ⁿ [min(rᵏθ,i𝒜ᵏᵢ, clip(rᵏθ,i, 1-ε, 1+ε)𝒜ᵏᵢ) + σ * 𝒮π]   (26)
+```
+
+Where **rᵏθ,i = πθ(aᵏᵢ|oᵏᵢ) / πθold(aᵏᵢ|oᵏᵢ)**. The critic network is updated by minimizing the value loss:
+
+```
+ℒ(φ) = (1/ℬn) Σᵢ₌₁ᴮ Σᵏ₌₁ⁿ max[(𝒱φ(sᵏᵢ) - R̂i)²,
+                              (clip(𝒱φ(sᵏᵢ), 𝒱φold(sᵏᵢ) - ε, 𝒱φold(sᵏᵢ) + ε) - R̂i)²]   (27)
+```
+
+#### 3.2.2 Actor-Critic Structure Based on LSTM
+
+In multi-UAV formation control tasks, due to the limitations of partial observability and the strong temporal dependencies inherent in the system states, agents must leverage historical observation information to make effective decisions for achieving stable and efficient coordinated control. Recurrent neural network (RNN), which are capable of memorizing historical data and capturing temporal dependencies, offer an ideal solution to address this challenge. Essentially, this approach replaces a standard linear layer with an RNN layer to enhance the model's ability to process sequential data. By incorporating RNNs, agents are able to retain critical historical information throughout sequential decision-making processes, thereby significantly improving formation establishment and maintenance performance.
+
+In our study, we integrate RNN layers into both the critic and actor networks of the improved PPO algorithm, as illustrated in Fig. 5, to incorporate historical information and mitigate the issue of incomplete observations during training. However, standard recurrent neural networks exhibit notable limitations when dealing with long temporal sequences. As the number of time steps increases, gradients tend to diminish during backpropagation, making it difficult for the model to retain critical information from earlier inputs. This issue, commonly referred to as the vanishing gradient problem, restricts the network's ability to model long-range dependencies and undermines its effectiveness in sequential decision-making tasks that require the integration of extended historical information.
+
+#### Figure 5: Adding LSTM Layer in Critic Network and Actor Network
+
+To address this problem, this study employs LSTM networks, as illustrated in Fig. 6. LSTM is an advanced variant of the RNN architecture, equipped with carefully designed gating mechanisms that prevent vanishing outputs or exploding gradients as neural signals propagate through feedback loops. These mechanisms enable LSTM networks to more effectively recognize and retain relevant information compared to conventional neural networks, thereby improving learning performance in partially observable environments. As a result, LSTM exhibits outstanding capabilities in handling problems with long-term dependencies, making it particularly suitable for integration into multi-agent reinforcement learning algorithms to facilitate information preservation and transmission. Moreover, the historical environmental feedback retained by LSTM can assist UAVs in formation building by enabling more effective learning to achieve higher rewards, thus ensuring the successful completion of formation control tasks.
+
+#### Figure 6: LSTM Network
+
+The LSTM network introduces three gating units: the forget gate, the input gate, and the output gate. At time step **t**, **xₜ** and **hₜ₋₁** represent the current input and the previous hidden state, respectively, while **Cₜ₋₁** and **Cₜ** denote the cell states at the previous and current time steps, respectively. Here, **σ** refers to the sigmoid activation function, and **tanh** denotes the hyperbolic tangent function.
+
+First, the forget gate determines which information should be discarded from the LSTM cell state. The output of the forget gate is given by:
+
+```
+fₜ = σ(Wf[hₜ₋₁, xₜ] + bf)                             (28)
+```
+
+Where **Wf** is the weight matrix, and **[hₜ₋₁, xₜ]** represents the concatenated vector composed of the previous hidden state and the current input.
+
+Next, the LSTM needs to determine which information should be stored in the long-term memory cell. First, the concatenated input is passed through a sigmoid activation function to produce the input gate output **iₜ**. Second, a new candidate cell state **C̃ₜ** is created using the tanh function. Third, after applying the forget mechanism, the output of the input gate **iₜ** is multiplied by the candidate cell state **C̃ₜ** and combined with the retained portion of the previous cell state to update the current cell state **Cₜ**. Thus, the updated cell state **Cₜ** is determined by the previous cell state **Cₜ₋₁**, the forget gate output **fₜ**, the input gate output **iₜ**, and the candidate cell state **C̃ₜ**, and is computed as follows:
+
+```
+iₜ = σ(Wi[hₜ₋₁, xₜ] + bi)                             (29)
+C̃ₜ = tanh(Wc[hₜ₋₁, xₜ] + bc)                          (30)
+Cₜ = fₜ ⊗ Cₜ₋₁ + iₜ ⊗ C̃ₜ                              (31)
+```
+
+where **⊗** denotes element-wise multiplication between two vectors. Finally, the output gate updates the next hidden state. The gate output **Oₜ** is obtained by applying the sigmoid activation function as follows:
+
+```
+Oₜ = σ(Wo[hₜ₋₁, xₜ] + bo)                             (32)
+```
+
+The cell state is then passed through a tanh function to normalize its values to the range **[-1, 1]**, and subsequently element-wise multiplied by the output gate value **Oₜ** to generate the hidden state **hₜ**, as given by:
+
+```
+hₜ = Oₜ ⊗ tanh(Cₜ)                                    (33)
+```
+
+Reinforcement learning models are trained through an iterative process of interaction with the environment, which is particularly evident in multi-UAV systems. This arises from the fact that each UAV acts as an independent agent, continuously interacting with the environment to learn, update, and optimize its decision-making policy.
+
+Based on the above principles, we integrate the LSTM network into the PPO algorithm under the CTDE framework, resulting in the proposed MA-LSTM-PPO algorithm. The pseudocode for the MA-LSTM-PPO algorithm is presented in Table 2, which outlines the training procedure for multi-UAV formation control.
+
+#### Table 2: MA-LSTM-PPO Algorithm
+
+**Algorithm:** An Improved PPO Algorithm with LSTM for Multi-Agent
+
+**Input:** All the parameters required for the experiments, reward function  
+**Output:** Policies for the UAV formation
+
+Initialize θ, critic 𝒱, policy π and φ  
+Initialize a memory buffer D  
+Set learning rate ∝  
+
+**while** step ≤ step_max **do**  
+    **for** iteration = 1 to batch_size **do**  
+        τ = [ empty list  
+        Initialize h⁽¹⁾₀,π, ..., h⁽ⁿ⁾₀,π actor RNN states  
+        Initialize h⁽¹⁾₀,𝒱, ..., h⁽ⁿ⁾₀,𝒱 critic RNN states  
+        **for** t = 1 to T **do**  
+            for all agents do  
+                p⁽ᵃ⁾ᵢ, h⁽ᵃ⁾ₜ,π = π(o⁽ᵃ⁾ₜ, h⁽ᵃ⁾ₜ₋₁,π; θ)  
+                u⁽ᵃ⁾ᵢ ~ p⁽ᵃ⁾ᵢ  
+                v̂⁽ᵃ⁾ₜ, h⁽ᵃ⁾ₜ,𝒱 = V(s⁽ᵃ⁾ₜ, h⁽ᵃ⁾ₜ₋₁,𝒱; φ)  
+            **end for**  
+            Execute actions uₜ, observe rₜ, sₜ₊₁ and oₜ₊₁  
+            τ+ = [sₜ, oₜ, hₜ,π, hₜ,𝒱, uₜ, rₜ, sₜ₊₁, oₜ₊₁]  
+        **end for**  
+        Compute advantage estimate Â via GAE on τ, using PopArt  
+        Compute reward-to-go R̂ on τ and normalize with PopArt  
+        Split trajectory τ into chunks of length L  
+        **for** l = 0, 1, ... T//L **do**  
+            D = D ∪ (τ[l : l + T, Â[l : l + L], R̂[l : l + L])  
+        **end for**  
+    **end for**  
+    **for** mini-batch k = 1, ... K **do**  
+        b ← random mini-batch from D with all agent data  
+        **for** each data chunk c in the mini-batch b **do**  
+            update RNN hidden states for π and 𝒱 from first hidden state in data chunk  
+        **end for**  
+    **end for**  
+    Adam update θ on ℒ(θ) with data b  
+    Adam update φ on ℒ(φ) with data b  
+**end while**
+
+---
+
+## 4. Simulation Platform Construction and Experimental Comparative Analysis
+
+### 4.1 Simulation Platform Construction
+
+To validate the effectiveness of the proposed approach to multi-UAV formation control, simulations and training were conducted based on the OpenAI Gym (Brockman et al., 2016) and Ray/RLlib (Liang et al., 2017) computational frameworks. Although Gym already provides a variety of simulation environments ranging from simple games to complex physical engines, a high-precision custom simulation environment was necessary to optimize the operation of deep reinforcement learning algorithms in this study.
+
+Therefore, individual subsystems were implemented using Python classes, and a Gym-based simulation platform was developed on top of PyBullet, following the state, action, and reward structures defined by the MDP model, as illustrated in Fig. 7.
+
+#### Figure 7: Simulation Platform Structure
+
+This simulation platform supports the dynamics simulation of quadrotor UAVs and is further integrated with Ray/RLlib to facilitate the design, training, and evaluation of various deep reinforcement learning algorithms. Ray provides a simple and flexible API for building distributed applications, while RLlib, built on Ray, serves as an open-source reinforcement learning library offering high scalability and a unified API interface.
+
+Figure 8 presents a distributed formation flight scenario simulated in the developed environment using four Crazyflie 2.0 UAVs. In the visualization, small blue quadrotor models represent individual UAVs, and red lines behind the UAVs depict their flight trajectories. Relative position connections between UAVs are also indicated with red lines to reflect real-time topological changes in the formation structure. A chessboard-patterned ground plane provides visual cues for observing UAV positions and motion trajectories. The control panel on the left side of the platform displays real-time physical server status information. Through this custom simulation environment, high-fidelity modeling of quadrotor UAV dynamics can be achieved, providing a scalable and precise testing platform to support the training and evaluation of distributed formation control algorithms.
+
+#### Figure 8: Distributed Formation Flight of Quadrotor UAVs in the PyBullet Environment
+
+### 4.2 Experimental Settings and Model Configuration
+
+To comprehensively evaluate the performance of the proposed approach, we conduct ablation studies and comparative analyses with several baseline approaches in the subsequent experiments, including MPC (Zhou et al., 2011) and a reinforcement learning-based leader-follower scheme (Xu et al., 2023).
+
+These experiments are designed to assess the practical applicability of our approach under physical constraints. Specifically, performance evaluation focuses on two key aspects:
+
+(1) The number of training steps required for algorithm convergence, where faster convergence indicates higher training efficiency;
+
+(2) The navigation reward and formation error achieved after loading the trained model parameters, where higher navigation rewards coupled with rapid and sufficiently small formation error convergence indicate better approach stability.
+
+The network structure of MA-LSTM-PPO algorithm is shown in Fig. 9. The feedback from the environment is firstly fed into neural networks for calculation and estimation, then to the LSTM network. Finally, in order to obtain an optimal policy, the outcomes are fed into neural networks for calculation. Both the action network and the evaluation network consist of one dense layer, one LSTM layer, and one dense layer, with the hidden size of the dense layer and LSTM layer set to 256. We follow common practices in PPO implementations, including generalized advantage estimation (GAE) with advantage normalization (Schulman et al., 2015b), observation normalization, gradient clipping, layer normalization, tanh activation, and using KL divergence as a loss metric. Following the PopArt technique proposed in (Hessel et al., 2019), value estimates are normalized using a moving average to stabilize value learning. Adhering to the principle of centralized training with decentralized execution, shared observations (i.e., observations from all UAVs) are input into the critic network. Experiments are conducted on a Ray-based distributed cluster using 80 workers. Depending on the number of UAVs (i.e., 3, 4, or 5), training is performed over 10 million, 30 million, and 60 million steps, respectively. Additionally, to maintain stable formation flight, a maximum input velocity constraint is imposed on each UAV during both training and inference phases. Training is carried out on a computing platform equipped with one NVIDIA RTX A5000 GPU and an AMD EPYC 7R32 102-core CPU, using the Adam optimizer. The algorithm's hyperparameters are listed in Table 3.
+
+#### Table 3: Algorithm's Hyperparameters
+
+| Hyperparameters | Value |
+|-----------------|-------|
+| train_batch_size | 20000 |
+| Learning rates | 0.0005 |
+| num_workers | 80 |
+| Gamma | 0.99 |
+| Clip_param | 0.2 |
+| Gae_lambda | 0.95 |
+| Episode_length | 242 |
+
+#### Figure 9: Structure of MA-LSTM-PPO Network
+
+### 4.3 Experimental Results and Analysis
+
+#### (1) Ablation Study
+
+To verify the contribution of each module to the algorithm's performance, we conducted ablation experiments by comparing the improved PPO algorithm with the original PPO algorithm and the MA-PPO algorithm, which only incorporates the CTDE framework. Models were trained for formations with 3, 4, and 5 UAVs, with the ideal formation topologies configured as regular polygons.
+
+As shown in Figure 10, in the later stages of training, our model successfully organized and maintained the formation while navigating toward a destination located at the top-right corner outside the visible map area.
+
+Figures 11, 12, and 13 respectively show the reward curves during formation training for 3, 4, and 5 UAVs. The original PPO algorithm (green) failed to converge in multi-agent continuous action tasks. The MA-PPO algorithm (blue), benefiting from the CTDE framework and entropy regularization in the objective function, achieved preliminary convergence. Each additional module (CTDE, LSTM) significantly enhanced algorithm performance across both test scenarios. When all technical components were integrated, the improved MA-LSTM-PPO algorithm (red) exhibited the best performance, achieving the fastest convergence and highest final rewards. These results indicate that the improved PPO algorithm effectively utilizes complex state information for accurate value estimation, outperforming the standard PPO in the partially observable Markov decision process (POMDP) settings.
+
+The experimental results validate the expected benefits of each module:
+
+1) **CTDE Framework:** Ensures convergence in multi-agent environments.
+2) **LSTM Networks:** Improve sample efficiency by capturing temporal dependencies.
+
+#### Figure 10: UAVs Are Navigating Towards the Destination That Is Out of the Screen and Maintaining the Formation
+
+#### Figure 11: The Curve of the Reward Function When 3 UAVs Are in Formation
+
+#### Figure 12: The Curve of the Reward Function When 4 UAVs Are in Formation
+
+#### Figure 13: The Curve of the Reward Function When 5 UAVs Are in Formation
+
+To objectively compare the performance of the improved and baseline algorithms, the following evaluation metrics were designed:
+
+**1) Formation Average Reward (FAR):** Measures the average formation reward obtained by UAVs over a fixed time. A higher FAR indicates better formation maintenance performance.
+
+```
+FAR = (Σᵀₜ₌₁ Rformation(t)) / T
+```
+
+where **Rformation(t)** is the formation reward at time **t**, and **T** is the evaluation duration.
+
+**2) Formation Stability (FS):** Quantifies the standard deviation of formation rewards over time, reflecting the consistency and smoothness of formation behaviors. A lower FS indicates greater stability.
+
+```
+FS = 1 / (1 + σ(Rformation(t)))
+```
+
+**3) Navigation Average Reward (NAR):** Measures the average navigation reward achieved by UAVs over a fixed time period, with higher values indicating more effective navigation strategies.
+
+```
+NAR = (Σᵀₜ₌₁ Rnavigation(t)) / T
+```
+
+**4) Navigation Stability (NS):** Assesses the variance in navigation rewards during the task, indicating the consistency of navigation performance.
+
+```
+NS = 1 / (1 + σ(Rnavigation(t)))
+```
+
+Table 4 summarizes the performance comparison results under scenarios with 3, 4, and 5 UAVs. Metrics include FAR, FS, NAR, and NS for the MA-LSTM-PPO, MA-PPO, and PPO algorithms.
+
+#### Table 4: The Mean Rewards of the Final 20% Step
+
+| Scenario | Indicator | MA-LSTM-PPO | MA-PPO | PPO |
+|----------|-----------|-------------|---------|-----|
+| 3 UAVs | FAR | -3.99857 | -4.68338 | -7.45318 |
+| | FS | 0.01835 | 0.14703 | 0.23303 |
+| | NAR | 21.84643 | 21.06907 | 9.68725 |
+| | NS | 0.24014 | 2.59140 | 0.33521 |
+| 4 UAVs | FAR | -4.91269 | -5.52698 | -12.71054 |
+| | FS | 0.06223 | 0.14703 | 0.11207 |
+| | NAR | 26.65240 | 21.37311 | 4.19329 |
+| | NS | 0.49817 | 1.44990 | 2.21961 |
+| 5 UAVs | FAR | -7.47262 | -11.41203 | -8.33595 |
+| | FS | 0.01415 | 0.02506 | 0.06824 |
+| | NAR | 36.02325 | 35.00267 | 1.85520 |
+| | NS | 0.93370 | 1.33715 | 1.43935 |
+
+The analysis of Table 4 demonstrates that the MA-LSTM-PPO algorithm significantly enhances formation control performance, improving formation accuracy, navigation efficiency, and system stability compared to baseline approaches.
+
+#### (2) Baseline Approach Comparison
+
+Our proposed model (our-model) was compared against other UAV formation control strategies, including:
+1) MPC (Zhou et al., 2011) and
+2) Leader-Follower Reinforcement Learning Strategy (Xu et al., 2023).
+
+In the baseline comparison, four UAVs were used to form a square topology with 0.5-meter side length.
+
+Traditional controllers such as MPC (Zhou et al., 2011) treat multi-task scenarios as motion planning problems, assigning tasks based on predefined priority rules. Since safety is the top priority, obstacle avoidance behaviors are prioritized over formation and navigation behaviors. Therefore, unless UAVs enter safety zones and formation errors converge, navigation tasks are often delayed.
+
+Leader-follower reinforcement learning approach (Xu et al., 2023) use similar network architectures but train UAVs to track virtual leaders, focusing only on maintaining relative distances without comprehensive multi-agent collaboration.
+
+Figure 14 shows the convergence of formation error and navigation rewards under different control strategies. Our approach (red) achieves superior formation accuracy, faster convergence, and better multi-task handling capabilities. Specifically, our approach achieves lower formation error and higher navigation rewards, demonstrating better maintenance of formation and more efficient navigation during movement. Unlike traditional approaches, our model simultaneously optimizes multiple reward functions, enabling UAVs to autonomously learn task prioritization without human intervention.
+
+#### Figure 14: Baseline Comparison
+
+Table 5 compares the formation error and navigation rewards among the models during the final 20% of the simulation steps.
+
+#### Table 5: The Mean Rewards of the Final 20% Steps
+
+| Approach | Scenario | Formation Error | Navigation Reward |
+|----------|----------|-----------------|-------------------|
+| MPC | 4 UAVs | 0.16680 | 4.22693 |
+| Leader-follower | 4 UAVs | 0.09900 | 13.80789 |
+| Our model | 4 UAVs | 0.01127 | 18.22033 |
+
+Analysis of Table 5 shows that compared to MPC, our approach improves formation accuracy by an order of magnitude and significantly enhances navigation rewards, confirming the advantages of approaches to distributed reinforcement learning in dynamic environments. Compared to the approach to leader-follower, our approach further boosts system performance by adopting a fully distributed, the Leader-free collaboration strategy, enhancing robustness against dynamic disturbances.
+
+---
+
+## 5. Conclusions
+
+This paper proposes an approach to UAV distributed formation control based on an improved PPO algorithm to address the limitations of traditional approaches in complex cooperative scenarios. By introducing the CTDE framework and integrating LSTM networks into the Actor-Critic architecture, we design the MA-LSTM-PPO algorithm, which significantly enhances the ability of multi-UAV systems to achieve formation establishment and maintenance without relying on global positional information or leader agents. To validate the effectiveness of the proposed approach, we developed a high-fidelity quadrotor UAV dynamic simulation environment based on PyBullet platform, supporting large-scale distributed training and evaluation. Comparative experiments against the traditional MPC approach and the approach to leader-follower based on reinforcement learning demonstrate that our approach outperforms baseline approaches in terms of formation error, convergence speed, and navigation rewards. Specifically, experimental results indicate that the proposed approach achieves lower formation errors, higher navigation rewards, and demonstrates significant advantages in adaptability to dynamic environments and overall system robustness. These findings validate the feasibility and superiority of distributed collaboration and sequential modeling in multi-agent reinforcement learning.
+
+Future work will focus on dynamic adaptive mechanisms for large-scale formations, exploring fault-tolerant strategies under UAV communication failures, and further optimizing sim-to-real transfer capabilities to enhance the practical deployment of multi-agent reinforcement learning algorithms on physical UAV platforms.
+
+---
+**Note:** This preprint research paper has not been peer reviewed. Electronic copy available at: https://ssrn.com/abstract=5286784

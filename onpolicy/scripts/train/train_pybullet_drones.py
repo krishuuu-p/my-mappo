@@ -129,13 +129,16 @@ def main(args):
         all_args.algorithm_name = "rmappo"
     
     # Set paper default hyperparameters
-    # Reference: docs/MA-LSTM-PPO-paper-summary.md Section 5
+    # Reference: UAV_Formation_Control_Complete_Paper.md Section 4.2, Table 3
     all_args.lr = 5e-4
     all_args.gamma = 0.99
     all_args.gae_lambda = 0.95
     all_args.clip_param = 0.2
-    # Episode length must match env: 8s * 48Hz ctrl_freq = 384 steps
-    all_args.episode_length = 384
+    # Paper Table 3: Episode_length = 242, hidden_size = 256
+    # With ctrl_freq=30 (default) and 8s episodes: 8*30 = 240 steps
+    all_args.episode_length = 240
+    # Paper Section 4.2: "hidden size of the dense layer and LSTM layer set to 256"
+    all_args.hidden_size = 256
     
     # CUDA setup
     if all_args.cuda and torch.cuda.is_available():

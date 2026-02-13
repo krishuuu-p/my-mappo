@@ -98,25 +98,31 @@ class LSTMActor(nn.Module):
         
         self.tpdv = dict(dtype=torch.float32, device=device)
         
-        # Input feature extraction: Dense -> ReLU
-        # Reference: docs/MA-LSTM-PPO-paper-summary.md Section 2
+        # Observation normalization (paper Section 4.2: "observation normalization")
+        self.obs_norm = nn.LayerNorm(obs_dim)
+        
+        # Input feature extraction: Dense -> Tanh -> LayerNorm
+        # Paper Section 4.2: "one dense layer, one LSTM layer, and one dense layer"
+        # Paper: "tanh activation", "layer normalization"
         init_method = nn.init.orthogonal_ if use_orthogonal else nn.init.xavier_uniform_
         
         self.fc1 = nn.Sequential(
             nn.Linear(obs_dim, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
+            nn.Tanh(),
+            nn.LayerNorm(hidden_size),
         )
         
         # LSTM layer
-        # Reference: docs/MA-LSTM-PPO-paper-summary.md Section 2
+        # Paper Section 4.2: LSTM with hidden_size=256
         self.lstm = nn.LSTM(
             input_size=hidden_size,
             hidden_size=lstm_hidden_size,
             num_layers=num_lstm_layers,
             batch_first=True,
         )
+        
+        # LayerNorm after LSTM (paper: "layer normalization")
+        self.lstm_norm = nn.LayerNorm(lstm_hidden_size)
         
         # Output layer: action mean
         self.action_mean = nn.Linear(lstm_hidden_size, action_dim)
@@ -186,8 +192,9 @@ class LSTMActor(nn.Module):
             print(f"  Will split into h and c")
             self._debug_printed = True
         
-        # Feature extraction
-        features = self.fc1(obs)  # (batch, hidden_size)
+        # Feature extraction: obs_norm -> fc1 (Dense->Tanh->LayerNorm)
+        obs_normed = self.obs_norm(obs)
+        features = self.fc1(obs_normed)  # (batch, hidden_size)
         
         # Prepare LSTM input (batch, seq_len=1, hidden_size)
         lstm_input = features.unsqueeze(1)
@@ -211,8 +218,9 @@ class LSTMActor(nn.Module):
         # LSTM forward
         lstm_out, (h_new, c_new) = self.lstm(lstm_input, (h, c))
         
-        # Output
+        # Output with LayerNorm after LSTM (paper: "layer normalization")
         lstm_out = lstm_out.squeeze(1)  # (batch, lstm_hidden_size)
+        lstm_out = self.lstm_norm(lstm_out)
         action_mean = self.action_mean(lstm_out)  # (batch, action_dim)
         
         # Apply tanh for bounded actions
@@ -298,9 +306,9 @@ class CentralizedCritic(nn.Module):
     """
     Centralized Critic network for MA-LSTM-PPO.
     
-    Reference: docs/MA-LSTM-PPO-paper-summary.md Section 2
-    - Input: share_obs (global state: concatenated positions, velocities of all agents)
-    - Dense -> ReLU -> (optional LSTM) -> Dense -> scalar value V(s)
+    Paper Section 4.2, Fig 9:
+    - Input: share_obs (joint observations from all UAVs)
+    - LayerNorm(obs) -> Dense -> Tanh -> LayerNorm -> LSTM -> LayerNorm -> Dense -> V(s)
     """
     
     def __init__(
@@ -335,12 +343,16 @@ class CentralizedCritic(nn.Module):
         
         self.tpdv = dict(dtype=torch.float32, device=device)
         
-        # Feature extraction: Dense -> ReLU
+        # Observation normalization (paper Section 4.2: "observation normalization")
+        self.obs_norm = nn.LayerNorm(share_obs_dim)
+        
+        # Feature extraction: Dense -> Tanh -> LayerNorm
+        # Paper Section 4.2: "one dense layer, one LSTM layer, and one dense layer"
+        # Paper: "tanh activation", "layer normalization"
         self.fc1 = nn.Sequential(
             nn.Linear(share_obs_dim, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
+            nn.Tanh(),
+            nn.LayerNorm(hidden_size),
         )
         
         # Optional LSTM layer
@@ -351,9 +363,12 @@ class CentralizedCritic(nn.Module):
                 num_layers=num_lstm_layers,
                 batch_first=True,
             )
+            # LayerNorm after LSTM (paper: "layer normalization")
+            self.lstm_norm = nn.LayerNorm(lstm_hidden_size)
             value_input_size = lstm_hidden_size
         else:
             self.lstm = None
+            self.lstm_norm = None
             value_input_size = hidden_size
         
         # Value output
@@ -406,8 +421,9 @@ class CentralizedCritic(nn.Module):
             values: State values (batch, 1)
             rnn_states_out: Updated LSTM hidden states (or None if not using LSTM)
         """
-        # Feature extraction
-        features = self.fc1(share_obs)  # (batch, hidden_size)
+        # Feature extraction: obs_norm -> fc1 (Dense->Tanh->LayerNorm)
+        share_obs_normed = self.obs_norm(share_obs)
+        features = self.fc1(share_obs_normed)  # (batch, hidden_size)
         
         if self.use_lstm and self.lstm is not None:
             # Prepare LSTM input
@@ -431,6 +447,8 @@ class CentralizedCritic(nn.Module):
             
             lstm_out, (h_new, c_new) = self.lstm(lstm_input, (h, c))
             lstm_out = lstm_out.squeeze(1)
+            # Apply LayerNorm after LSTM (paper: "layer normalization")
+            lstm_out = self.lstm_norm(lstm_out)
             # Return in buffer format: (batch, recurrent_N=2, hidden)
             rnn_states_out = torch.cat([h_new, c_new], dim=0).transpose(0, 1)
             
