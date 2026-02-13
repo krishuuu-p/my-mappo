@@ -557,7 +557,9 @@ class PyBulletDroneRunner(Runner):
                 env_completions[env_idx].append(completion)
             
             # Use completions from environment 0 if available
+            # Only show the most recent episode (last num_agents completions)
             if 0 in env_completions:
+                recent_completions = env_completions[0][-self.num_agents:]
                 episode_details_to_show = {
                     'env_idx': 0,
                     'drones': [
@@ -565,7 +567,7 @@ class PyBulletDroneRunner(Runner):
                             'drone_id': c['agent_id'],
                             **c['summary']
                         }
-                        for c in sorted(env_completions[0], key=lambda x: x['agent_id'])
+                        for c in sorted(recent_completions, key=lambda x: x['agent_id'])
                     ]
                 }
             
@@ -648,12 +650,16 @@ class PyBulletDroneRunner(Runner):
                 current_positions_log.append(env_current)
         
         # Compute aggregate metrics
-        # Prioritize episode_details_to_show if available
+        # Prioritize episode_details_to_show if available (from accumulated recent completions)
         if episode_details_to_show and episode_details_to_show['drones']:
+            # Use accumulated completions as source of truth - replace previous data
+            all_reached = []
+            all_final_distances = []
             for drone in episode_details_to_show['drones']:
                 all_reached.append(drone.get('reached_target', False))
+                all_final_distances.append(drone.get('final_distance', 0))
         elif episode_details:
-            # Already populated from loop above
+            # Use data from current step's infos (already populated from loop above)
             pass
         
         avg_distance = np.mean(all_final_distances) if all_final_distances else None
