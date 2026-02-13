@@ -104,6 +104,9 @@ class PyBulletDroneWrapper:
         # Store for computing deltas
         self._prev_distances = None
         
+        # Visual markers for rendering
+        self._visual_marker_ids = []  # Store IDs of visual markers for cleanup
+        
         # Set up spaces for MAPPO
         self._setup_spaces()
     
@@ -429,12 +432,78 @@ class PyBulletDroneWrapper:
         
         return obs_n, share_obs, rewards_n, dones_n, infos_n, available_actions
     
+    def draw_position_markers(self):
+        """Draw visual markers for initial and target positions in PyBullet GUI."""
+        try:
+            import pybullet as p
+            
+            # Remove old markers
+            for marker_id in self._visual_marker_ids:
+                try:
+                    p.removeBody(marker_id)
+                except:
+                    pass
+            self._visual_marker_ids.clear()
+            
+            # Draw markers for each drone
+            for i in range(self.num_drones):
+                # Green sphere for initial position
+                initial_pos = self._episode_initial_positions[i]
+                initial_visual = p.createVisualShape(
+                    shapeType=p.GEOM_SPHERE,
+                    radius=0.1,
+                    rgbaColor=[0, 1, 0, 0.5]  # Green, semi-transparent
+                )
+                initial_marker = p.createMultiBody(
+                    baseMass=0,
+                    baseVisualShapeIndex=initial_visual,
+                    basePosition=initial_pos
+                )
+                self._visual_marker_ids.append(initial_marker)
+                
+                # Red sphere for target position
+                target_pos = self._episode_target_positions[i]
+                target_visual = p.createVisualShape(
+                    shapeType=p.GEOM_SPHERE,
+                    radius=0.15,
+                    rgbaColor=[1, 0, 0, 0.6]  # Red, semi-transparent
+                )
+                target_marker = p.createMultiBody(
+                    baseMass=0,
+                    baseVisualShapeIndex=target_visual,
+                    basePosition=target_pos
+                )
+                self._visual_marker_ids.append(target_marker)
+                
+                # Draw a line from initial to target position
+                p.addUserDebugLine(
+                    lineFromXYZ=initial_pos,
+                    lineToXYZ=target_pos,
+                    lineColorRGB=[0.5, 0.5, 0.5],
+                    lineWidth=2,
+                    lifeTime=0  # Permanent until removed
+                )
+                
+        except Exception as e:
+            # Silently fail if PyBullet not available or GUI not active
+            pass
+    
     def render(self, mode: str = 'human'):
         """Render the environment."""
         return self._env.render()
     
     def close(self):
         """Close the environment."""
+        # Clean up visual markers
+        try:
+            import pybullet as p
+            for marker_id in self._visual_marker_ids:
+                try:
+                    p.removeBody(marker_id)
+                except:
+                    pass
+        except:
+            pass
         self._env.close()
 
 

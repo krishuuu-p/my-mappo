@@ -13,7 +13,7 @@ set RECURRENT_N=%4
 
 if "%MODEL_DIR%"=="" set MODEL_DIR=C:\Users\DELL\my-mappo\onpolicy\scripts\results\pybullet-drones\drones_3\rmappo\check\run26\models
 if "%NUM_DRONES%"=="" set NUM_DRONES=3
-if "%EPISODE_LENGTH%"=="" set EPISODE_LENGTH=50
+if "%EPISODE_LENGTH%"=="" set EPISODE_LENGTH=384
 if "%RECURRENT_N%"=="" set RECURRENT_N=1
 
 echo =========================================

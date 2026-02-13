@@ -13,7 +13,7 @@ set RECURRENT_N=%4
 
 if "%NUM_DRONES%"=="" set NUM_DRONES=3
 if "%NUM_STEPS%"=="" set NUM_STEPS=5000
-if "%EPISODE_LENGTH%"=="" set EPISODE_LENGTH=50
+if "%EPISODE_LENGTH%"=="" set EPISODE_LENGTH=384
 if "%RECURRENT_N%"=="" set RECURRENT_N=1
 
 echo =========================================

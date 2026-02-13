@@ -14,12 +14,11 @@ from onpolicy.envs.env_wrappers import ShareDummyVecEnv
 def make_render_env(all_args):
     def get_env_fn(rank):
         def init_env():
-            # Use GUI for visual rendering (GIF not supported by BaseAviary)
+            # Use GUI for visual rendering
             env = PyBulletDroneWrapper(
                 num_drones=all_args.num_drones,
                 gui=True,  # Enable GUI for visualization
                 record=False,
-                use_formation_reward=True,
             )
             env.seed(all_args.seed + rank * 1000)
             return env
@@ -31,9 +30,7 @@ def make_render_env(all_args):
         raise NotImplementedError("Only support 1 thread for rendering")
 
 def parse_args(args, parser):
-    # Environment specific arguments
-    parser.add_argument('--num_drones', type=int, default=3, 
-                        help="Number of drones in the environment")
+    # Environment specific arguments (num_drones already defined in config.py)
     parser.add_argument('--scenario_name', type=str, default='drones_3',
                         help="Scenario name for organizing results")
     
@@ -51,9 +48,15 @@ def main(args):
 
     # Set algorithm configurations
     print("Using recurrent MAPPO with MA-LSTM policy for rendering")
+    all_args.model = 'ma_lstm'  # Use MA-LSTM model architecture
     all_args.use_recurrent_policy = True
     all_args.use_naive_recurrent_policy = False
     all_args.use_wandb = False  # Disable wandb for rendering
+    all_args.algorithm_name = "rmappo"
+    all_args.env_name = "pybullet-drones"
+    all_args.recurrent_N = 2  # LSTM stores both h and c states
+    # Episode length must match env: 8s * 48Hz ctrl_freq = 384 steps
+    all_args.episode_length = 384
 
     # Validation
     assert all_args.use_render, ("You need to set use_render to True")

@@ -8,7 +8,7 @@ export PYTHONPATH="C:\Users\DELL\my-mappo"
 # Default parameters
 MODEL_DIR=${1:-"C:\Users\DELL\my-mappo\onpolicy\scripts\results\pybullet-drones\drones_4\rmappo\check\run2\models"}
 NUM_DRONES=${2:-3}
-EPISODE_LENGTH=${3:-50}
+EPISODE_LENGTH=${3:-384}
 RECURRENT_N=${4:-1}
 RENDER_EPISODES=${5:-3}
 

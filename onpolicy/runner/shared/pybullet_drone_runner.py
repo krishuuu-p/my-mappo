@@ -449,6 +449,19 @@ class PyBulletDroneRunner(Runner):
                 for episode in range(self.all_args.render_episodes):
                     episode_num = episode_count + episode
                     obs, share_obs, available_actions = envs.reset()
+                    
+                    # Draw visual markers for initial and target positions
+                    try:
+                        # Access the actual environment from the vectorized wrapper
+                        actual_env = envs.envs[0] if hasattr(envs, 'envs') else envs
+                        actual_env.draw_position_markers()
+                        print(f"\n[Episode {episode_num}] Visual markers drawn:")
+                        print(f"  Green spheres = Initial positions")
+                        print(f"  Red spheres = Target positions")
+                        print(f"  Gray lines = Initial → Target path\n")
+                    except Exception as e:
+                        print(f"[DEBUG] Could not draw markers: {e}")
+                    
                     if self.all_args.save_gifs:
                         try:
                             render_output = envs.render('rgb_array')
