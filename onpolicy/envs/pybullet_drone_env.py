@@ -235,7 +235,7 @@ class PyBulletDroneWrapper:
         Compute reward for navigation with formation alignment.
         
         Total reward (shared across all agents):
-            r = w_form * r_form + w_nav * r_nav + w_dist * r_dist + w_avoid * r_avoid + r_reached
+            r = w_form * r_form + w_nav * r_nav + w_dist * r_dist + w_avoid * r_avoid + r_reached + r_vel_penalty
         
         Components:
         - Formation error via Procrustes/SVD alignment (downweighted):
@@ -247,10 +247,11 @@ class PyBulletDroneWrapper:
         - Collision avoidance penalty:
             r_avoid = -C * num_collisions
         - Reaching bonus: +1.0 per drone within 5cm of its target
+        - Velocity penalty: Penalize high velocity when close to target (Fix 1)
         
         Reference: docs/MA-LSTM-PPO-paper-summary.md Section 4
         """
-        positions, _ = self._extract_positions_velocities(states)
+        positions, velocities = self._extract_positions_velocities(states)
         target_pos = self._env.TARGET_POS  # (num_drones, 3)
         
         # --- 1. Formation reward (Procrustes/SVD) — downweighted ---
@@ -284,12 +285,24 @@ class PyBulletDroneWrapper:
         # +1.0 per drone within 5cm of its target
         r_reached = sum(1.0 for d in current_distances if d < 0.50)
         
+        # --- 6. Velocity penalty when close to target (Fix 1) ---
+        # Penalize high velocity when drones are close to targets
+        # This teaches the policy to slow down and hover at the target
+        r_vel_penalty = 0.0
+        velocity_threshold = 0.3  # Distance threshold for applying velocity penalty
+        for i in range(self.num_drones):
+            if current_distances[i] < velocity_threshold:
+                velocity_magnitude = np.linalg.norm(velocities[i])
+                # Strong penalty (weight=2.0) for moving fast when close
+                r_vel_penalty -= 2.0 * velocity_magnitude
+        
         # --- Total reward (shared across all agents) ---
         total_reward = (self.w_form * r_form 
                        + self.w_nav * r_nav 
                        + self.w_dist * r_dist 
                        + self.w_avoid * r_avoid 
-                       + r_reached)
+                       + r_reached
+                       + r_vel_penalty)
         
         # All agents receive the same shared reward (paper Section 4)
         rewards = [total_reward] * self.num_drones
@@ -303,6 +316,7 @@ class PyBulletDroneWrapper:
             'r_dist': r_dist,
             'r_avoid': r_avoid,
             'r_reached': r_reached,
+            'r_vel_penalty': r_vel_penalty,
             'formation_error': E,
             'normalization_G': G,
             'num_collisions': num_collisions,
@@ -390,14 +404,41 @@ class PyBulletDroneWrapper:
         # MultiHoverAviary with ActionType.VEL handles PID internally
         raw_obs, base_reward, terminated, truncated, info = self._env.step(actions)
         
+        # Get states for reward computation and share_obs
+        states = self._get_drone_states()
+        positions, velocities = self._extract_positions_velocities(states)
+        target_pos = self._env.TARGET_POS
+        
+        # Fix 3: Check if all drones reached target with low velocity (early success termination)
+        all_reached = True
+        success_distance_threshold = 0.2  # Within 20cm of target
+        success_velocity_threshold = 0.1  # Velocity less than 0.1 m/s
+        for i in range(self.num_drones):
+            distance = np.linalg.norm(target_pos[i] - positions[i])
+            velocity_magnitude = np.linalg.norm(velocities[i])
+            if distance >= success_distance_threshold or velocity_magnitude >= success_velocity_threshold:
+                all_reached = False
+                break
+        
+        # Add success bonus if all drones reached target
+        success_bonus = 100.0 if all_reached else 0.0
+        
+        # Early termination on success
+        if all_reached:
+            terminated = True
+        
         # Combine terminated and truncated for done
         done = terminated or truncated
         
-        # Get states for reward computation and share_obs
-        states = self._get_drone_states()
-        
         # Compute reward per paper Section 4 (formation + navigation + collision)
         rewards_list, reward_infos = self._compute_reward(states)
+        
+        # Add success bonus to all agents' rewards
+        if success_bonus > 0:
+            rewards_list = [r + success_bonus for r in rewards_list]
+            for info in reward_infos:
+                info['success_bonus'] = success_bonus
+                info['total_reward'] += success_bonus
         
         # Compute observations - return as numpy arrays
         obs_n = raw_obs.astype(np.float32)  # Already (num_drones, obs_dim)
@@ -413,14 +454,14 @@ class PyBulletDroneWrapper:
         if terminated:
             self._episode_terminated_early = True
         
-        # Build info dicts
+        # Build info dicts (positions and velocities already extracted above)
         infos_n = []
-        positions, velocities = self._extract_positions_velocities(states)
         for i in range(self.num_drones):
             agent_info = {
                 'individual_reward': rewards_list[i],
                 'current_position': positions[i].tolist(),
                 'current_velocity': velocities[i].tolist(),
+                'success_reached': all_reached,
                 **reward_infos[i]
             }
             # Add episode summary info on done (accessible by runner before auto-reset)
