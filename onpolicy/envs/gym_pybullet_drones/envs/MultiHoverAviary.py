@@ -68,13 +68,18 @@ class MultiHoverAviary(BaseRLAviary):
                          obs=obs,
                          act=act
                          )
+        # Override speed limit: 0.03 is too conservative for navigation tasks
+        # 0.1 * MAX_SPEED gives ~0.83 m/s, enough to travel ~6.6m in 8s episode
+        if hasattr(self, 'SPEED_LIMIT'):
+            self.SPEED_LIMIT = 0.1 * self.MAX_SPEED_KMH * (1000/3600)
+        
         # RANDOMIZED Target positions for generalization
-        # Each target is 1-3 meters away from initial position in random direction
+        # Each target is 0.3-1.0 meters away (must be reachable within episode)
         self.TARGET_POS = np.zeros_like(self.INIT_XYZS)
         for i in range(num_drones):
-            distance = np.random.uniform(1.0, 3.0)  # Random distance to target
-            angle = np.random.uniform(0, 2 * np.pi)  # Random horizontal direction
-            z_offset = np.random.uniform(0.3, 1.5)   # Random vertical offset
+            distance = np.random.uniform(0.3, 1.0)    # Reachable distance
+            angle = np.random.uniform(0, 2 * np.pi)   # Random horizontal direction
+            z_offset = np.random.uniform(0.2, 0.8)    # Moderate vertical offset
             
             self.TARGET_POS[i] = self.INIT_XYZS[i] + [
                 distance * np.cos(angle),  # X offset
@@ -99,10 +104,11 @@ class MultiHoverAviary(BaseRLAviary):
             ]
         
         # Randomize target positions relative to new initial positions
+        # Keep distances reachable: 0.3-1.0m (max speed ~0.83 m/s, 8s episode)
         for i in range(self.NUM_DRONES):
-            distance = np.random.uniform(1.0, 3.0)  # Random distance to target
-            angle = np.random.uniform(0, 2 * np.pi)  # Random horizontal direction
-            z_offset = np.random.uniform(0.3, 1.5)   # Random vertical offset
+            distance = np.random.uniform(0.3, 1.0)    # Reachable distance
+            angle = np.random.uniform(0, 2 * np.pi)   # Random horizontal direction
+            z_offset = np.random.uniform(0.2, 0.8)    # Moderate vertical offset
             
             self.TARGET_POS[i] = self.INIT_XYZS[i] + [
                 distance * np.cos(angle),  # X offset
@@ -163,8 +169,8 @@ class MultiHoverAviary(BaseRLAviary):
         """
         states = np.array([self._getDroneStateVector(i) for i in range(self.NUM_DRONES)])
         for i in range(self.NUM_DRONES):
-            if (abs(states[i][0]) > 2.0 or abs(states[i][1]) > 2.0 or states[i][2] > 2.0 # Truncate when a drones is too far away
-             or abs(states[i][7]) > .4 or abs(states[i][8]) > .4 # Truncate when a drone is too tilted
+            if (abs(states[i][0]) > 5.0 or abs(states[i][1]) > 5.0 or states[i][2] > 5.0 # Truncate when a drone is too far away
+             or abs(states[i][7]) > 1.0 or abs(states[i][8]) > 1.0 # Truncate when a drone is too tilted (57 deg)
             ):
                 return True
         if self.step_counter/self.PYB_FREQ > self.EPISODE_LEN_SEC:

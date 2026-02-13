@@ -47,7 +47,9 @@ class PyBulletDroneWrapper:
         ctrl_freq: int = 48,  # Match simulation's 48Hz (240/5)
         episode_len_sec: float = 8.0,
         collision_dist: float = 0.1,
-        w_nav: float = 1.0,
+        w_form: float = 0.1,
+        w_nav: float = 5.0,
+        w_dist: float = 1.0,
         w_avoid: float = 1.0,
         collision_C: float = 1.0,
     ):
@@ -64,13 +66,17 @@ class PyBulletDroneWrapper:
             ctrl_freq: Control frequency (48Hz to match simulation)
             episode_len_sec: Episode length in seconds
             collision_dist: Distance threshold for collision detection
-            w_nav: Weight for navigation reward (paper Section 4)
+            w_form: Weight for formation reward (downweighted for navigation tasks)
+            w_nav: Weight for navigation reward — primary signal (paper Section 4)
+            w_dist: Weight for persistent distance penalty
             w_avoid: Weight for collision avoidance reward (paper Section 4)
             collision_C: Collision penalty constant C ~1 (paper Section 4)
         """
         self.num_drones = num_drones
         self.collision_dist = collision_dist
+        self.w_form = w_form
         self.w_nav = w_nav
+        self.w_dist = w_dist
         self.w_avoid = w_avoid
         self.collision_C = collision_C
         
@@ -226,48 +232,46 @@ class PyBulletDroneWrapper:
         states: np.ndarray,
     ) -> Tuple[List[float], List[Dict[str, float]]]:
         """
-        Compute reward as per MA-LSTM-PPO paper Section 4.
+        Compute reward for navigation with formation alignment.
         
         Total reward (shared across all agents):
-            r = r_form + w_nav * r_nav + w_avoid * r_avoid
+            r = w_form * r_form + w_nav * r_nav + w_dist * r_dist + w_avoid * r_avoid + r_reached
         
         Components:
-        - Formation error via Procrustes/SVD alignment:
-            E = (1/N) * sum_i || R @ p_i - t_i ||^2
-            G = max pairwise distance^2 of target formation
+        - Formation error via Procrustes/SVD alignment (downweighted):
             r_form = -E / (G + eps)
-        - Navigation reward (sum of distance improvements):
+        - Navigation reward — PRIMARY signal (delta distance improvement):
             r_nav = sum_i (d_prev_i - d_curr_i)
+        - Distance penalty — persistent penalty for being far from targets:
+            r_dist = -(1/N) * sum_i dist_i
         - Collision avoidance penalty:
-            r_avoid = -C * num_collisions  (C ~1 per paper)
+            r_avoid = -C * num_collisions
+        - Reaching bonus: +1.0 per drone within 5cm of its target
         
         Reference: docs/MA-LSTM-PPO-paper-summary.md Section 4
-        
-        Args:
-            states: Drone states array (num_drones, state_dim)
-            
-        Returns:
-            rewards: List of shared rewards (same value for all agents)
-            reward_infos: List of reward info dicts per agent
         """
         positions, _ = self._extract_positions_velocities(states)
         target_pos = self._env.TARGET_POS  # (num_drones, 3)
         
-        # --- 1. Formation reward (Procrustes/SVD) ---
-        # E = (1/N) * sum_i || R p_i - t_i ||^2,  G = max pairwise dist^2
+        # --- 1. Formation reward (Procrustes/SVD) — downweighted ---
         E, G = compute_formation_error(positions, target_pos)
         r_form = -E / (G + 1e-8)
         
-        # --- 2. Navigation reward (shared sum) ---
+        # --- 2. Navigation reward — PRIMARY signal ---
         # r_nav = sum_i (d_prev_i - d_curr_i)
         r_nav = 0.0
+        current_distances = np.zeros(self.num_drones)
         for i in range(self.num_drones):
             dist = np.linalg.norm(target_pos[i] - positions[i])
+            current_distances[i] = dist
             r_nav += (self._prev_distances[i] - dist)
             self._prev_distances[i] = dist
         
-        # --- 3. Collision avoidance penalty ---
-        # r_avoid = -C * num_collisions
+        # --- 3. Distance penalty — persistent signal ---
+        # Penalizes current distance to targets (provides gradient even when stationary)
+        r_dist = -np.mean(current_distances)
+        
+        # --- 4. Collision avoidance penalty ---
         num_collisions = 0
         for i in range(self.num_drones):
             for j in range(i + 1, self.num_drones):
@@ -276,19 +280,29 @@ class PyBulletDroneWrapper:
                     num_collisions += 1
         r_avoid = -self.collision_C * num_collisions
         
+        # --- 5. Reaching bonus ---
+        # +1.0 per drone within 5cm of its target
+        r_reached = sum(1.0 for d in current_distances if d < 0.05)
+        
         # --- Total reward (shared across all agents) ---
-        total_reward = r_form + self.w_nav * r_nav + self.w_avoid * r_avoid
+        total_reward = (self.w_form * r_form 
+                       + self.w_nav * r_nav 
+                       + self.w_dist * r_dist 
+                       + self.w_avoid * r_avoid 
+                       + r_reached)
         
         # All agents receive the same shared reward (paper Section 4)
         rewards = [total_reward] * self.num_drones
         
         # Compute per-drone distances for logging
-        per_drone_dists = [np.linalg.norm(target_pos[i] - positions[i]) for i in range(self.num_drones)]
+        per_drone_dists = current_distances.tolist()
         
         reward_info = {
             'r_form': r_form,
             'r_nav': r_nav,
+            'r_dist': r_dist,
             'r_avoid': r_avoid,
+            'r_reached': r_reached,
             'formation_error': E,
             'normalization_G': G,
             'num_collisions': num_collisions,
