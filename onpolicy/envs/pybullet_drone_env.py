@@ -293,8 +293,8 @@ class PyBulletDroneWrapper:
         for i in range(self.num_drones):
             if current_distances[i] < velocity_threshold:
                 velocity_magnitude = np.linalg.norm(velocities[i])
-                # Strong penalty (weight=2.0) for moving fast when close
-                r_vel_penalty -= 2.0 * velocity_magnitude
+                # Strong penalty (weight=15.0) for moving fast when close
+                r_vel_penalty -= 15.0 * velocity_magnitude
         
         # --- Total reward (shared across all agents) ---
         total_reward = (self.w_form * r_form 
