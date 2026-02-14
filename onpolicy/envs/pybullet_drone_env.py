@@ -52,6 +52,8 @@ class PyBulletDroneWrapper:
         w_dist: float = 1.0,
         w_avoid: float = 1.0,
         collision_C: float = 1.0,
+        formation_spacing: float = 0.5,
+        perturbation_std: float = 0.05,
     ):
         """
         Initialize the PyBullet drone wrapper.
@@ -71,6 +73,8 @@ class PyBulletDroneWrapper:
             w_dist: Weight for persistent distance penalty
             w_avoid: Weight for collision avoidance reward (paper Section 4)
             collision_C: Collision penalty constant C ~1 (paper Section 4)
+            formation_spacing: Inter-drone distance in formation template (meters)
+            perturbation_std: Std-dev of Gaussian noise on initial positions (meters)
         """
         self.num_drones = num_drones
         self.collision_dist = collision_dist
@@ -80,24 +84,14 @@ class PyBulletDroneWrapper:
         self.w_avoid = w_avoid
         self.collision_C = collision_C
         
-        # RANDOMIZED Initial positions for generalization
-        # Range: x,y ∈ [-1.5, 1.5], z ∈ [0.1, 0.5]
-        # This ensures diverse starting configurations during training
-        initial_xyzs = np.zeros((num_drones, 3))
-        for i in range(num_drones):
-            initial_xyzs[i] = [
-                np.random.uniform(-1.5, 1.5),  # Random X
-                np.random.uniform(-1.5, 1.5),  # Random Y
-                np.random.uniform(0.1, 0.5)     # Random Z (above ground)
-            ]
-        
-        # Create the underlying environment
+        # Create the underlying environment with formation-based positioning
+        # MultiHoverAviary handles formation template, random center, random yaw,
+        # and perturbations internally (see FORMATION_CONTROL_TRAINING_STRATEGY.md)
         # ActionType.VEL accepts velocity commands and uses internal PID to compute RPMs
-        # This means we don't need our own PID controller
         self._env = MultiHoverAviary(
             drone_model=DroneModel.CF2X,
             num_drones=num_drones,
-            initial_xyzs=initial_xyzs,
+            initial_xyzs=None,  # Let MultiHoverAviary generate from formation template
             physics=Physics.PYB,
             pyb_freq=pyb_freq,
             ctrl_freq=ctrl_freq,
@@ -105,6 +99,8 @@ class PyBulletDroneWrapper:
             record=record,
             obs=obs_type,
             act=act_type,
+            formation_spacing=formation_spacing,
+            perturbation_std=perturbation_std,
         )
         
         # Store for computing deltas
