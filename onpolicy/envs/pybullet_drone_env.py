@@ -288,7 +288,7 @@ class PyBulletDroneWrapper:
         # +1.0 if agent i is within 50cm of its target
         r_reached = np.zeros(self.num_drones)
         for i in range(self.num_drones):
-            if current_distances[i] < 0.50:
+            if current_distances[i] < 0.10:
                 r_reached[i] = 1.0
         
         # --- 6. Velocity penalty when close to target (per-agent) ---
@@ -475,7 +475,7 @@ class PyBulletDroneWrapper:
                     'initial_distance': float(self._episode_initial_distances[i]),
                     'final_distance': float(reward_infos[i]['dist_to_target']),
                     'distance_improvement': float(self._episode_initial_distances[i] - reward_infos[i]['dist_to_target']),
-                    'reached_target': reward_infos[i]['dist_to_target'] < 0.50,
+                    'reached_target': reward_infos[i]['dist_to_target'] < 0.10,
                     'direction_traveled': (positions[i] - self._episode_initial_positions[i]).tolist(),
                     'direction_to_target': (self._episode_target_positions[i] - self._episode_initial_positions[i]).tolist(),
                 }
