@@ -232,103 +232,105 @@ class PyBulletDroneWrapper:
         states: np.ndarray,
     ) -> Tuple[List[float], List[Dict[str, float]]]:
         """
-        Compute reward for navigation with formation alignment.
+        Compute individual rewards for each drone.
         
-        Total reward (shared across all agents):
-            r = w_form * r_form + w_nav * r_nav + w_dist * r_dist + w_avoid * r_avoid + r_reached + r_vel_penalty
+        Total reward per agent i:
+            r[i] = w_form * r_form + w_nav * r_nav[i] + w_dist * r_dist[i] + w_avoid * r_avoid[i] + r_reached[i] + r_vel_penalty[i]
         
         Components:
-        - Formation error via Procrustes/SVD alignment (downweighted):
+        - Formation error via Procrustes/SVD alignment (shared across all agents):
             r_form = -E / (G + eps)
-        - Navigation reward — PRIMARY signal (delta distance improvement):
-            r_nav = sum_i (d_prev_i - d_curr_i)
-        - Distance penalty — persistent penalty for being far from targets:
-            r_dist = -(1/N) * sum_i dist_i
-        - Collision avoidance penalty:
-            r_avoid = -C * num_collisions
-        - Reaching bonus: +1.0 per drone within 5cm of its target
-        - Velocity penalty: Penalize high velocity when close to target (Fix 1)
+        - Navigation reward (per-agent delta distance improvement):
+            r_nav[i] = d_prev[i] - d_curr[i]
+        - Distance penalty (per-agent distance to target):
+            r_dist[i] = -dist[i]
+        - Collision avoidance penalty (per-agent):
+            r_avoid[i] = -1 if agent i is in collision, else 0
+        - Reaching bonus (per-agent): +1.0 if agent i within 50cm of its target
+        - Velocity penalty (per-agent): Penalize high velocity when close to target
         
         Reference: docs/MA-LSTM-PPO-paper-summary.md Section 4
         """
         positions, velocities = self._extract_positions_velocities(states)
         target_pos = self._env.TARGET_POS  # (num_drones, 3)
         
-        # --- 1. Formation reward (Procrustes/SVD) — downweighted ---
+        # --- 1. Formation reward (Procrustes/SVD) — shared across all agents ---
         E, G = compute_formation_error(positions, target_pos)
         r_form = -E / (G + 1e-8)
         
-        # --- 2. Navigation reward — PRIMARY signal ---
-        # r_nav = sum_i (d_prev_i - d_curr_i)
-        r_nav = 0.0
+        # --- 2. Navigation reward (per-agent) — PRIMARY signal ---
+        # r_nav[i] = d_prev[i] - d_curr[i] for each agent i
+        r_nav = np.zeros(self.num_drones)
         current_distances = np.zeros(self.num_drones)
         for i in range(self.num_drones):
             dist = np.linalg.norm(target_pos[i] - positions[i])
             current_distances[i] = dist
-            r_nav += (self._prev_distances[i] - dist)
+            r_nav[i] = (self._prev_distances[i] - dist)
             self._prev_distances[i] = dist
         
-        # --- 3. Distance penalty — persistent signal ---
-        # Penalizes current distance to targets (provides gradient even when stationary)
-        r_dist = -np.mean(current_distances)
+        # --- 3. Distance penalty (per-agent) — persistent signal ---
+        # r_dist[i] = -current_distances[i] for each agent i
+        r_dist = -current_distances
         
-        # --- 4. Collision avoidance penalty ---
+        # --- 4. Collision avoidance penalty (per-agent) ---
+        # r_avoid[i] = -1 if agent i is involved in a collision, else 0
+        r_avoid = np.zeros(self.num_drones)
         num_collisions = 0
         for i in range(self.num_drones):
             for j in range(i + 1, self.num_drones):
                 inter_dist = np.linalg.norm(positions[i] - positions[j])
                 if inter_dist < self.collision_dist:
                     num_collisions += 1
-        r_avoid = -self.collision_C * num_collisions
+                    r_avoid[i] = -1
+                    r_avoid[j] = -1
         
-        # --- 5. Reaching bonus ---
-        # +1.0 per drone within 5cm of its target
-        r_reached = sum(1.0 for d in current_distances if d < 0.50)
+        # --- 5. Reaching bonus (per-agent) ---
+        # +1.0 if agent i is within 50cm of its target
+        r_reached = np.zeros(self.num_drones)
+        for i in range(self.num_drones):
+            if current_distances[i] < 0.50:
+                r_reached[i] = 1.0
         
-        # --- 6. Velocity penalty when close to target (Fix 1) ---
+        # --- 6. Velocity penalty when close to target (per-agent) ---
         # Penalize high velocity when drones are close to targets
-        # This teaches the policy to slow down and hover at the target
-        r_vel_penalty = 0.0
+        r_vel_penalty = np.zeros(self.num_drones)
         velocity_threshold = 0.3  # Distance threshold for applying velocity penalty
         for i in range(self.num_drones):
             if current_distances[i] < velocity_threshold:
                 velocity_magnitude = np.linalg.norm(velocities[i])
                 # Strong penalty (weight=15.0) for moving fast when close
-                r_vel_penalty -= 15.0 * velocity_magnitude
+                r_vel_penalty[i] = -15.0 * velocity_magnitude
         
-        # --- Total reward (shared across all agents) ---
-        total_reward = (self.w_form * r_form 
-                       + self.w_nav * r_nav 
-                       + self.w_dist * r_dist 
-                       + self.w_avoid * r_avoid 
-                       + r_reached
-                       + r_vel_penalty)
-        
-        # All agents receive the same shared reward (paper Section 4)
-        rewards = [total_reward] * self.num_drones
-        
-        # Compute per-drone distances for logging
-        per_drone_dists = current_distances.tolist()
-        
-        reward_info = {
-            'r_form': r_form,
-            'r_nav': r_nav,
-            'r_dist': r_dist,
-            'r_avoid': r_avoid,
-            'r_reached': r_reached,
-            'r_vel_penalty': r_vel_penalty,
-            'formation_error': E,
-            'normalization_G': G,
-            'num_collisions': num_collisions,
-            'total_reward': total_reward,
-        }
+        # --- Total reward per agent ---
+        rewards = []
         reward_infos = []
         for i in range(self.num_drones):
-            info_i = reward_info.copy()
-            info_i['dist_to_target'] = per_drone_dists[i]
-            info_i['current_pos'] = positions[i].tolist() if hasattr(positions[i], 'tolist') else list(positions[i])
-            info_i['target_pos'] = target_pos[i].tolist() if hasattr(target_pos[i], 'tolist') else list(target_pos[i])
-            reward_infos.append(info_i)
+            total_reward_i = ( r_form 
+                            + self.w_nav * r_nav[i] 
+                            # + self.w_dist * r_dist[i] 
+                            + self.w_avoid * r_avoid[i] 
+                            # + r_reached[i]
+                            # + r_vel_penalty[i]
+                            )
+            rewards.append(total_reward_i)
+            
+            # Create per-agent reward info
+            reward_info_i = {
+                'r_form': r_form,
+                'r_nav': r_nav[i],
+                'r_dist': r_dist[i],
+                'r_avoid': r_avoid[i],
+                'r_reached': r_reached[i],
+                'r_vel_penalty': r_vel_penalty[i],
+                'formation_error': E,
+                'normalization_G': G,
+                'num_collisions': num_collisions,
+                'total_reward': total_reward_i,
+                'dist_to_target': current_distances[i],
+                'current_pos': positions[i].tolist() if hasattr(positions[i], 'tolist') else list(positions[i]),
+                'target_pos': target_pos[i].tolist() if hasattr(target_pos[i], 'tolist') else list(target_pos[i]),
+            }
+            reward_infos.append(reward_info_i)
         
         return rewards, reward_infos
     
