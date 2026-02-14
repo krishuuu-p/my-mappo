@@ -4,7 +4,7 @@ from onpolicy.envs.gym_pybullet_drones.envs.BaseRLAviary import BaseRLAviary
 from onpolicy.envs.gym_pybullet_drones.utils.enums import DroneModel, Physics, ActionType, ObservationType
 
 
-def _build_formation_template(num_drones, spacing=0.5):
+def _build_formation_template(num_drones, spacing=1.0):
     """
     Build a fixed formation template centered at the origin.
     
@@ -100,11 +100,11 @@ class MultiHoverAviary(BaseRLAviary):
                  record=False,
                  obs: ObservationType=ObservationType.KIN,
                  act: ActionType=ActionType.RPM,
-                 formation_spacing: float=0.5,
+                 formation_spacing: float=1.0,
                  perturbation_std: float=0.05,
                  arena_xy_bound: float=1.5,
                  arena_z_range: tuple=(0.2, 1.0),
-                 target_distance_range: tuple=(0.5, 1.5),
+                 target_distance_range: tuple=(1.0, 1.5),
                  ):
         """Initialization of a multi-agent RL environment for formation control.
 

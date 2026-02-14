@@ -52,7 +52,7 @@ class PyBulletDroneWrapper:
         w_dist: float = 1.0,
         w_avoid: float = 1.0,
         collision_C: float = 1.0,
-        formation_spacing: float = 0.5,
+        formation_spacing: float = 1.0,
         perturbation_std: float = 0.05,
     ):
         """
